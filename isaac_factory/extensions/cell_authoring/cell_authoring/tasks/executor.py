@@ -525,6 +525,29 @@ class TaskExecutor:
 
         self.registry.start_task(task.task_id, started_at_step=0)
 
+        # Phase 4B Step 8 / Phase 2 — replay-authoritative peg pose probe
+        # at step 0, BEFORE any command. Enters the per-task fingerprint
+        # under D-CONT-1; used by inter-node continuity verification
+        # (post_N1.peg_xyz_final ≈ pre_N2.peg_xyz_initial).
+        _peg_pos_initial_arr, _ = self._peg.get_world_poses()
+        peg_xyz_initial: tuple[float, float, float] = (
+            float(_peg_pos_initial_arr[0][0]),
+            float(_peg_pos_initial_arr[0][1]),
+            float(_peg_pos_initial_arr[0][2]),
+        )
+
+        # Phase 4B Step 8 / Phase 2 — pick-side lift-off threshold.
+        # Active only when the task picks from a fixture (Phase 5+
+        # scope). For Phase 4A from-belt sources, stays None and
+        # pick_lift_off_step remains None throughout the cycle.
+        pick_source_z_threshold_m: float | None = None
+        if (hasattr(task.pick_source, "fixture_id")
+                and getattr(task.pick_source, "source_kind", None)
+                in ("fixture", "from_fixture")):
+            pick_source_z_threshold_m = (
+                float(task.pick_source.world_pose_m[2]) + 0.02
+            )
+
         player = TrajectoryPlayer(stage=self.stage, robot_cfg=robot_cfg)
         player.reset()
 
@@ -548,6 +571,10 @@ class TaskExecutor:
         floor_or_belt_first_post_close = None
         fixture_first_post_close = None
         peg_xyz_final = None
+        # Phase 4B Step 8 / Phase 2 — authoritative-evidence trackers
+        # (D-CONT-5 inputs).
+        pick_lift_off_step: int | None = None
+        place_landing_step: int | None = None
 
         SUSTAINED = 30
         BREAK_THR = int(round(0.10 / PHYSICS_DT_S))
@@ -673,6 +700,28 @@ class TaskExecutor:
                     floor_or_belt_first_post_close = step_i
                 if fixture_first_post_close is None and fixture_c:
                     fixture_first_post_close = step_i
+
+            # Phase 4B Step 8 / Phase 2 — pick-lift-off detection.
+            # Only active for tasks that pick from a fixture (D-CONT-5
+            # input for the session's mark_fixture_empty commit on the
+            # pick side). For from-belt sources, stays None.
+            if (pick_lift_off_step is None
+                    and pick_source_z_threshold_m is not None
+                    and step_i >= grasp_close_step
+                    and pad_L and pad_R
+                    and peg_xyz[2] > pick_source_z_threshold_m):
+                pick_lift_off_step = step_i
+
+            # Phase 4B Step 8 / Phase 2 — place-landing detection.
+            # First step at or after release_start_step where the peg
+            # has re-acquired contact with a fixture AND both pads
+            # have broken contact. D-CONT-5 input for the session's
+            # mark_fixture_occupied commit on the place side.
+            if (place_landing_step is None
+                    and step_i >= release_start_step
+                    and fixture_c
+                    and not pad_L and not pad_R):
+                place_landing_step = step_i
             if lift_end_step <= step_i < place_end_step and (pad_L or pad_R):
                 if max_pad_pen_mm < pad_pen_min_in_transport:
                     pad_pen_min_in_transport = max_pad_pen_mm
@@ -729,21 +778,28 @@ class TaskExecutor:
         if pad_pen_min_in_transport >= 1e9:
             pad_pen_min_in_transport = 0.0
 
-        # Mark fixture occupied if peg landed near place target.
+        # Phase 4B Step 8 / Phase 2 — placement evidence emission.
+        # The executor no longer mutates fixture occupancy (D-CONT-5);
+        # it emits the objective placement offset and lets
+        # ExecutionSession commit the occupancy transition in Phase G,
+        # conditioned on the validator's PASS verdict (D-CONT-5,
+        # D-CONT-5a).
+        placement_offset_xy_m: tuple[float, float] | None = None
         if peg_xyz_final is not None:
-            dx = abs(peg_xyz_final[0] - task.place_target.world_pose_m[0])
-            dy = abs(peg_xyz_final[1] - task.place_target.world_pose_m[1])
-            if dx < task.place_target.placement_tolerance_xy_m and \
-               dy < task.place_target.placement_tolerance_xy_m:
-                self.registry.mark_fixture_occupied(
-                    task.place_target.fixture_id, task.pick_source.object_id)
+            dx_signed = peg_xyz_final[0] - task.place_target.world_pose_m[0]
+            dy_signed = peg_xyz_final[1] - task.place_target.world_pose_m[1]
+            placement_offset_xy_m = (dx_signed, dy_signed)
 
         self.registry.set_task_phase("validating")
 
         result = TaskResult(
             task_id=task.task_id, profile_id=profile.value,
             outcome=TaskOutcome.PASS,
+            peg_xyz_initial=peg_xyz_initial,
             peg_xyz_final=peg_xyz_final,
+            placement_offset_xy_m=placement_offset_xy_m,
+            pick_lift_off_step=pick_lift_off_step,
+            place_landing_step=place_landing_step,
             peg_max_z_m=peg_max_z, peg_min_z_m=peg_min_z,
             grasp_acquired_step=grasp_acquired_step,
             grasp_lost_in_transport_step=grasp_lost_in_transport_step,

@@ -46,6 +46,7 @@ from .registry import (
     RobotState,
     TaskState,
     ContactState,
+    RegistryStateError,
 )
 from .executor import TaskExecutor
 from .validation import UnifiedValidator, ValidationReport
@@ -74,6 +75,7 @@ __all__ = [
     "RobotState",
     "TaskState",
     "ContactState",
+    "RegistryStateError",
     "TaskExecutor",
     "UnifiedValidator",
     "ValidationReport",

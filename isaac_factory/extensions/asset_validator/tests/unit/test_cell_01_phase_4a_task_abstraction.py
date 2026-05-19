@@ -264,13 +264,34 @@ class TestRegistryMultiObjectReadiness:
         )
         # The validated peg should also be present.
         assert "Peg_01" in snap["objects"]
-        # WorkFixture_01 should be marked occupied since the cycle placed
-        # the peg within tolerance.
+        # WorkFixture_01 should still be present in the registry
+        # (registered by ``TaskExecutor.prepare()``). Phase 4B Step 8 /
+        # Phase 2 migrated fixture-occupancy mutation authority from
+        # the executor up to ``ExecutionSession.step()`` Phase G
+        # (D-CONT-5). After ``executor.execute(...)`` alone — without a
+        # surrounding session — the executor MUST NOT have mutated
+        # ``WorkFixture_01.occupied_by``; the session-committed
+        # occupancy property is tested at the Phase 4B layer
+        # (test_cell_01_phase_4b_step8_p2_occupancy_authority.py).
         wf = snap["fixtures"].get("WorkFixture_01")
         assert wf is not None
-        assert "Peg_01" in wf["occupied_by"], (
-            f"placed peg not marked on the work fixture; "
-            f"WorkFixture_01.occupied_by={wf['occupied_by']}"
+        assert wf["occupied_by"] == [], (
+            f"D-CONT-5 violation: executor.execute() mutated fixture "
+            f"occupancy directly; WorkFixture_01.occupied_by={wf['occupied_by']!r}"
+        )
+        # The placement evidence the executor emits (replaces the
+        # old executor-owned occupancy mutation): peg_xyz_final must be
+        # within the place_target's placement_tolerance_xy_m of the
+        # target pose. This is the objective evidence the session keys
+        # its Phase-G mark_fixture_occupied commit on.
+        target = task.place_target.world_pose_m
+        tol = task.place_target.placement_tolerance_xy_m
+        dx = abs(result.peg_xyz_final[0] - target[0])
+        dy = abs(result.peg_xyz_final[1] - target[1])
+        assert dx <= tol and dy <= tol, (
+            f"placement evidence outside tolerance: "
+            f"peg_xyz_final={result.peg_xyz_final} target={target} "
+            f"tol={tol*1000:.0f}mm dx={dx*1000:.1f}mm dy={dy*1000:.1f}mm"
         )
 
 

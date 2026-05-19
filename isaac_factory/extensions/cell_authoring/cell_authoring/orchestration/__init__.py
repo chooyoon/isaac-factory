@@ -188,6 +188,7 @@ from .scheduler import (
     TopologicalSequentialScheduler,
 )
 from .session import (
+    EVENT_FIXTURE_STATE_CHANGED,
     EVENT_NODE_EXECUTION_COMPLETED,
     EVENT_NODE_EXECUTION_STARTED,
     EVENT_NODE_SELECTED,
@@ -303,5 +304,6 @@ __all__ = [
     "EVENT_NODE_EXECUTION_COMPLETED",
     "EVENT_SESSION_COMPLETED",
     "EVENT_SESSION_FAILED",
+    "EVENT_FIXTURE_STATE_CHANGED",
     "ResetScope",   # re-export from cell_authoring.tasks (step-6 additive)
 ]

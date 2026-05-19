@@ -178,6 +178,21 @@ class TaskResult:
 
     Carries enough data that every Phase 3M/N/O/P validation gate can
     be re-applied without re-running the cycle.
+
+    Field classification per D-CONT-7 / D-CONT-7a:
+      * ``peg_xyz_final``, ``peg_xyz_initial`` — replay-authoritative;
+        enter the per-task fingerprint (last-tick canonical pose under
+        D-CONT-1).
+      * ``placement_offset_xy_m``, ``pick_lift_off_step``,
+        ``place_landing_step`` — authoritative-evidence (input to the
+        session's D-CONT-5 occupancy-commit decision in Phase G).
+        NOT motion metrics; their semantics is categorical
+        (lift-off detected? landing detected? offset within tol?).
+      * every other field — observational/diagnostic. Per-tick
+        aggregate metrics (motion peaks, accelerations, EE speeds)
+        are bounded to per-node verdicts only (D-CONT-2).
+      * ``wall_clock_s`` is diagnostic-only (D-TRACE-4) and is
+        excluded from replay-identity comparisons.
     """
     task_id:               str
     profile_id:            str
@@ -185,9 +200,33 @@ class TaskResult:
     outcome_detail:        str = ""
 
     # Endpoint metrics (Phase 3M).
+    # ``peg_xyz_initial`` is Phase 4B Step 8 / Phase 2 addition: peg
+    # pose at step 0, before any command. Replay-authoritative under
+    # D-CONT-1; enters the per-task fingerprint. Used by inter-node
+    # continuity verification (post_N1.peg_xyz_final ≈ pre_N2
+    # .peg_xyz_initial within Phase 3P tolerance).
+    peg_xyz_initial:       tuple[float, float, float] | None = None
     peg_xyz_final:         tuple[float, float, float] | None = None
     peg_max_z_m:           float = 0.0
     peg_min_z_m:           float = 0.0
+
+    # Placement evidence (Phase 4B Step 8 / Phase 2).
+    # Authoritative-evidence per D-CONT-5: input to the session's
+    # Phase-G occupancy-commit decision. ``placement_offset_xy_m`` is
+    # (dx, dy) of peg_xyz_final relative to task.place_target.world_pose_m.
+    # When ``None``, no place-target evidence is available
+    # (peg_xyz_final missing). NOT a motion metric.
+    placement_offset_xy_m: tuple[float, float] | None = None
+    # Step at which the peg first cleared its pick-side fixture's top
+    # by >= ε (≈ 20 mm). None when there is no pick-side fixture
+    # (e.g. from-belt source) or the lift-off was never detected.
+    # Authoritative-evidence; not a motion metric.
+    pick_lift_off_step:    int | None = None
+    # Step at which the peg first re-acquired contact with a fixture
+    # AND both pads broke contact for the first time post-release.
+    # None when neither condition is observed. Authoritative-evidence;
+    # not a motion metric.
+    place_landing_step:    int | None = None
 
     # Temporal-grasp metrics (Phase 3N).
     grasp_acquired_step:   int | None = None
@@ -234,9 +273,15 @@ class TaskResult:
             "profile_id":         self.profile_id,
             "outcome":            self.outcome.value,
             "outcome_detail":     self.outcome_detail,
+            "peg_xyz_initial":    list(self.peg_xyz_initial) if self.peg_xyz_initial else None,
             "peg_xyz_final":      list(self.peg_xyz_final) if self.peg_xyz_final else None,
             "peg_max_z_m":        self.peg_max_z_m,
             "peg_min_z_m":        self.peg_min_z_m,
+            "placement_offset_xy_m": (list(self.placement_offset_xy_m)
+                                       if self.placement_offset_xy_m is not None
+                                       else None),
+            "pick_lift_off_step": self.pick_lift_off_step,
+            "place_landing_step": self.place_landing_step,
             "grasp_acquired_step":            self.grasp_acquired_step,
             "grasp_lost_in_transport_step":   self.grasp_lost_in_transport_step,
             "last_left_pad_contact_step":     self.last_left_pad_contact_step,

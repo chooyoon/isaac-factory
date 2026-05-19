@@ -170,8 +170,15 @@ from .trace import DurableTraceRecorder
 # ───────────────────────── version / constants ─────────────────────────
 
 
-SESSION_SNAPSHOT_FINGERPRINT_VERSION: int = 1
-"""Canonical SessionRuntimeSnapshot fingerprint schema version."""
+SESSION_SNAPSHOT_FINGERPRINT_VERSION: int = 2
+"""Canonical SessionRuntimeSnapshot fingerprint schema version.
+
+Version history:
+  1 — initial schema (Phase 4B Step 6).
+  2 — Phase 4B Step 8 / Phase 2: per-task result fingerprint now
+      includes ``peg_xyz_initial`` (additive field, replay-authoritative
+      under D-CONT-1 when present on the result).
+"""
 
 
 # Runtime event types — stable strings used in trace.jsonl.
@@ -182,6 +189,11 @@ EVENT_NODE_EXECUTION_STARTED:   str = "NodeExecutionStarted"
 EVENT_NODE_EXECUTION_COMPLETED: str = "NodeExecutionCompleted"
 EVENT_SESSION_COMPLETED:        str = "SessionCompleted"
 EVENT_SESSION_FAILED:           str = "SessionFailed"
+# Phase 4B Step 8 / Phase 2 — authoritative occupancy transitions
+# emitted exclusively from ExecutionSession.step() Phase G under
+# D-CONT-5. Never emitted from the executor, the validator, the
+# scheduler, or any subordinate component.
+EVENT_FIXTURE_STATE_CHANGED:    str = "FixtureStateChanged"
 
 
 # Per-node runtime statuses — stable strings used in fingerprints.
@@ -637,6 +649,14 @@ class ExecutionSession:
         else:
             self._failed = self._failed | {node_id}
 
+        # 7c. Phase G — D-CONT-5 authoritative occupancy commit.
+        # Single mutation point for fixture occupancy across the
+        # entire codebase. Conditioned on PASS verdict + declared
+        # fixture transitions in the task definition. Cites D-CONT-5,
+        # D-CONT-5a, D-LIFE-6, D-LIFE-7.
+        if passed:
+            self._commit_phase_g_occupancy(task, node_id, result)
+
         # 8. Emit NodeExecutionCompleted.
         self._emit(EVENT_NODE_EXECUTION_COMPLETED, payload={
             "node_id":                  node_id,
@@ -701,6 +721,82 @@ class ExecutionSession:
 
     # ─────────── helpers ───────────
 
+    def _commit_phase_g_occupancy(
+        self, task: Any, node_id: str, result: Any,
+    ) -> None:
+        """Sole D-CONT-5 occupancy mutation point.
+
+        Cites D-CONT-5, D-CONT-5a, D-LIFE-6, D-LIFE-7. Called from
+        Phase G of ``step()`` after the verdict is known to be PASS.
+
+        Mutation ordering (load-bearing — fixes D-EXEC-7 / D-EXEC-8
+        "trace commit follows the action"):
+
+          1. registry.mark_fixture_empty(pick)  [mutation]
+          2. emit FixtureStateChanged(pick)     [trace commit]
+          3. registry.mark_fixture_occupied(place)  [mutation]
+          4. emit FixtureStateChanged(place)    [trace commit]
+
+        Subsequent `NodeExecutionCompleted` (emitted by the caller)
+        is the last event of the orchestration tick — preserves
+        D-BUS-3 monotone gap-free seq.
+
+        Forgiving on missing fields: a resolved ``task`` that does
+        not expose ``pick_source`` / ``place_target`` (e.g. a
+        non-PickPlace task type, or a unit-test fake whose task is a
+        bare ``TaskNode``) yields no commits. Production Phase 4A
+        ``PickPlaceTask`` always carries both.
+
+        Forgiving on missing registry: a ``task_executor`` without
+        a ``.registry`` attribute (test fakes that don't model
+        registry state) yields no commits. Production Phase 4A
+        ``TaskExecutor`` always carries one.
+        """
+        pick_source  = getattr(task, "pick_source",  None)
+        place_target = getattr(task, "place_target", None)
+
+        # The pick-side ``fixture_id`` is optional on Phase 4A's
+        # ``PickSource`` (today's PickSource only carries ``source_kind``
+        # such as "static"/"conveyor"/"tray_slot" — no fixture). A
+        # later phase that adds from-fixture picks will populate this
+        # attribute and the same commit logic activates.
+        pick_fixture_id  = getattr(pick_source,  "fixture_id", None) if pick_source  is not None else None
+        pick_object_id   = getattr(pick_source,  "object_id",  None) if pick_source  is not None else None
+        place_fixture_id = getattr(place_target, "fixture_id", None) if place_target is not None else None
+
+        if pick_fixture_id is None and place_fixture_id is None:
+            return
+
+        registry = getattr(self._task_executor, "registry", None)
+        if registry is None:
+            return
+
+        # 1+2. Pick-side empty (only if the task picks from a fixture).
+        if pick_fixture_id is not None and pick_object_id is not None:
+            f = registry.fixtures.get(pick_fixture_id)
+            prev_occupied_by = f.occupied_by if f is not None else None
+            registry.mark_fixture_empty(pick_fixture_id, pick_object_id)
+            self._emit(EVENT_FIXTURE_STATE_CHANGED, payload={
+                "fixture_id":        pick_fixture_id,
+                "prev_occupied_by":  prev_occupied_by,
+                "new_occupied_by":   None,
+                "by_node_id":        node_id,
+                "transition":        "empty",
+            })
+
+        # 3+4. Place-side occupied.
+        if place_fixture_id is not None and pick_object_id is not None:
+            f = registry.fixtures.get(place_fixture_id)
+            prev_occupied_by = f.occupied_by if f is not None else None
+            registry.mark_fixture_occupied(place_fixture_id, pick_object_id)
+            self._emit(EVENT_FIXTURE_STATE_CHANGED, payload={
+                "fixture_id":        place_fixture_id,
+                "prev_occupied_by":  prev_occupied_by,
+                "new_occupied_by":   pick_object_id,
+                "by_node_id":        node_id,
+                "transition":        "occupied",
+            })
+
     def _emit(self, event_type: str, *, payload: Mapping[str, Any]) -> EventEnvelope:
         """Single mutation path into the bus. Cites D-BUS-1/3/9.
 
@@ -725,16 +821,25 @@ class ExecutionSession:
 def _result_fingerprint(result: Any) -> str:
     """Canonical-JSON fingerprint of a TaskExecutor result.
 
-    Step 6 includes ONLY replay-safe fields:
+    Step 6 + Phase 2 includes ONLY replay-safe fields:
       * ``passed`` (derived from ``result.passed``)
       * ``outcome_value`` (derived from ``result.outcome.value`` or
         ``result.outcome`` string)
+      * ``peg_xyz_initial`` if present (Phase 4B Step 8 / Phase 2,
+        replay-authoritative under D-CONT-1) — last-tick canonical
+        pose; used by inter-node continuity verification.
       * ``peg_xyz_final`` if present (Phase 4A) — rounded to deterministic
         precision via direct serialisation through canonical_dumps,
         which forbids NaN/Inf (D-TRACE-3 allow_nan=False)
 
     Excludes (deliberately):
       * ``wall_clock_s`` (Phase 4A diagnostic-only; D-SCHED-11)
+      * placement evidence (``placement_offset_xy_m``,
+        ``pick_lift_off_step``, ``place_landing_step``) —
+        authoritative-evidence per D-CONT-5 (input to occupancy
+        commit), but bounded to per-task semantics; their presence
+        in replay identity is deferred until the boundary-snapshot
+        projector lands in Phase 3 of the Step 8 sequence.
       * any field whose presence would make the fingerprint
         non-deterministic across processes
 
@@ -746,6 +851,9 @@ def _result_fingerprint(result: Any) -> str:
         "passed":        _extract_result_passed(result),
         "outcome_value": _extract_result_outcome_value(result),
     }
+    peg_xyz_init = getattr(result, "peg_xyz_initial", None)
+    if peg_xyz_init is not None:
+        fp_payload["peg_xyz_initial"] = list(peg_xyz_init)
     peg_xyz = getattr(result, "peg_xyz_final", None)
     if peg_xyz is not None:
         fp_payload["peg_xyz_final"] = list(peg_xyz)
