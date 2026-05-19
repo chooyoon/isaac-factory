@@ -579,6 +579,314 @@ The following are recognized gaps that future revisions will need to address. Li
 
 ---
 
+## 12. Inter-Node Continuity Contract  *(D-CONT)*
+
+### 12.0 Scope
+
+This section binds **Step 8 onward** — the first runtime moment at which the deterministic-execution contract crosses a node boundary with retained state. Up to Step 7, the contract concerned one node's execution and one session's bookkeeping. From Step 8 forward, the contract concerns what authority survives the inter-node gap and what does not.
+
+Step 8 deliberately does not prove orchestration capability. Step 8 proves: **deterministic retained-state handoff with contamination-resistant replay-authoritative continuity semantics.** The two-node test job (pick-belt → place-FixtureA, then pick-FixtureA → place-FixtureB) is a validation vehicle. The deliverable is the authority discipline catalogued below.
+
+Subsequent implementation steps (9 retry/cascade, 10 replay-identity tool, 11 operator channel, 12 conveyor-policy refactor) MUST cite this section for every cross-node assumption they make.
+
+### 12.1 Authoritative vs Observational State
+
+The Phase 4B runtime distinguishes three orthogonal state populations:
+
+| population | example fields | authority? | replay-identity participation |
+|---|---|---|---|
+| **Authoritative continuity** | object D-LIFE state, fixture occupancy, canonical object pose, session orchestration sets, event-ordering metadata | yes | yes — explicitly enumerated by D-CONT-1 |
+| **Observational projection** (registry mirrors of live simulator state) | per-tick joint velocities, contact flags, wrist pose, gripper drive target | no | no — incidentally survive the boundary, MUST NOT be relied on |
+| **Diagnostic** | `wall_clock_s`, `joint_vel_peak_rad_s`, `cartesian_path_length_m`, `wall_ns` | no | no — emitted for human inspection, excluded from all L3 comparisons |
+
+Four principles bind the partition; each is normative.
+
+* **Simulator state is NOT orchestration authority.** PhysX scene values are read by the executor as observational probes (D-EXEC-5 phase 3); they enter the registry only as observational projection. Orchestration may not infer authority from "the simulator happened to leave it there."
+
+* **Registry state is NOT authoritative by default.** The `CellStateRegistry` is a convenience aggregator. Membership in the registry does not imply replay authority. Authority is conferred explicitly and only by D-CONT-1.
+
+* **Observational projection does NOT imply replay authority.** The executor's per-tick `update_object_pose`, `update_contact_state`, `update_robot_pose` writes mirror live physics into the registry. They are observational. Only the *last-tick* canonical object pose is promoted to authoritative by D-CONT-1; intermediate per-tick writes are not promoted by anything.
+
+* **Only explicitly enumerated D-CONT state participates in replay identity.** A field not named in D-CONT-1 does not participate in L3 replay identity (D-REPLAY-1). The boundary snapshot serializer (D-CONT-6) enforces this allowlist mechanically.
+
+*Rationale.* The Phase 4A `CellStateRegistry` was authored before Step 8 made the registry replay-authoritative in part. Without an explicit partition, every future contributor would naturally assume "if it's in the registry, it matters." That inference is wrong, frequent, and load-bearing for the determinism contract. D-CONT-7 turns it into a contract violation.
+
+### 12.2 D-CONT-1 — Authoritative continuity enumeration
+
+**D-CONT-1** — Authoritative retained continuity across node boundaries is **strictly limited to**:
+
+* **object ownership** — the D-LIFE state of each managed object (D-LIFE-1);
+* **fixture occupancy** — the D-LIFE-6 binary state of each managed fixture;
+* **canonical object pose** — the final per-tick `update_object_pose` write the outgoing node made to the registry for each registered object;
+* **session orchestration sets** — `_completed`, `_failed`, `_retry_counts`, `_node_runtime` (D-SESS-1);
+* **deterministic event-ordering metadata** — `seq`, `orchestration_tick`, source `node_id`, snapshot `kind` (D-BUS-3, D-EXEC-12).
+
+This list is the complete authoritative continuity set for Phase 4B. Anything not in this list is, by D-CONT-1, not authoritative. Expansion of this set is a contract revision, not an implementation detail.
+
+### 12.3 D-CONT-2 — Non-authoritative state forbidden as continuity input
+
+**D-CONT-2** — The following are non-authoritative continuity inputs. None may be read by predicates, scheduler decisions, registry writes, validator gates, or replay-identity assertions:
+
+| forbidden continuity input | reason |
+|---|---|
+| rigid-body linear velocity | residual dynamic state; non-portable across PhysX versions |
+| rigid-body angular velocity | same |
+| contact manifold persistence | solver-internal warm-start data; not stable across solver iterations |
+| solver warm-start cache | implementation-defined; opaque |
+| articulation stabilization state | numerical convergence artifact, not a logical property |
+| sleep/wake state of any rigid body | PhysX-internal optimization, not orchestration semantics |
+| latent PhysX solver residuals | non-deterministic across runtime versions by definition |
+| per-tick aggregate metrics computed inside a node (motion peaks, accelerations, EE speeds) | bounded to per-node verdicts only; no cross-node meaning |
+
+A predicate or replay-identity comparator that wants to read any of the above is the wrong predicate or comparator. A future requirement that seems to require any of the above means the architecture is wrong, not the contract.
+
+### 12.4 D-CONT-3 — Boundary PhysX-quiescence
+
+**D-CONT-3** — Between the outgoing node's Phase-G snapshot commit and the incoming node's Phase-B precondition evaluation, exactly **zero** `world.step()` calls occur. The interval is PhysX-quiescent.
+
+Commands issued during the interval (belt-velocity restoration, registry writes, event emissions) are non-stepping operations: they queue PhysX-visible writes for the incoming node's first physics tick but do not themselves advance the simulator clock. Forbidden between phases:
+
+* `world.step(...)`;
+* `world.play()` followed by an implicit step;
+* `kit.update()` if it can drive a step;
+* any other simulator-advancing primitive.
+
+*Rationale.* A single idle `world.step()` between nodes permits passive settling drift — gravity nudging objects, sleeping joints ticking toward solver-resolved rest. That drift is deterministic in one run but diverges across PhysX versions, BLAS implementations, and compile flags. Forbidding the step removes the channel.
+
+### 12.5 D-CONT-4 — `ResetScope.ACQUIRED_ONLY` semantics
+
+**D-CONT-4** — `ResetScope.ACQUIRED_ONLY` means **selective authoritative persistence of ownership-closed retained state only**.
+
+It is NOT:
+
+* arbitrary simulator persistence;
+* residual dynamic continuity preservation;
+* emergent PhysX-history authority;
+* "whatever happens to survive `world.step()` not being called" as a feature.
+
+The reset implementation is required to:
+
+* preserve canonical object pose for objects whose D-LIFE state at boundary entry is `available` or `released` and which are ownership-closed (no pending reservation conflict);
+* preserve fixture occupancy in the registry;
+* explicitly drain or zero everything in the D-CONT-2 forbidden list whose drain is itself a non-stepping operation (e.g. `registry.contact = ContactState()`, `contact_source.query_contacts()` to flush);
+* re-issue **no** PhysX teleport commands (no `set_joint_positions`, no `set_world_poses`, no `set_linear_velocities`).
+
+Anything `ACQUIRED_ONLY` does not enumerate is not persisted in the contract sense. If the implementation happens to leave it in place because no code touched it, that is incidental and may not be relied on.
+
+### 12.6 D-CONT-5 — Occupancy mutation authority
+
+**D-CONT-5** — `mark_fixture_occupied` and `mark_fixture_empty` are callable **only** from `ExecutionSession`, **only** in Phase G of an orchestration tick, conditioned on:
+
+1. the outgoing executor's `TaskResult` has `outcome == TaskOutcome.PASS`;
+2. the task definition declares a fixture transition (`task.pick_source.fixture_id` for `mark_fixture_empty`; `task.place_target.fixture_id` for `mark_fixture_occupied`);
+3. the executor's `TaskResult` carries objective placement/release evidence (final pose, lift-off step, placement offset) within the task definition's declared tolerances.
+
+The executor **emits evidence**. The `UnifiedValidator` **confirms the verdict**. The session **commits the registry transition**. Three distinct authorities, one mutation point.
+
+A direct registry write from inside `TaskExecutor._run_cycle` to `mark_fixture_*` is a contract violation, even if the resulting registry state would be equivalent. The discipline is positional, not consequential.
+
+#### 12.6.1 D-CONT-5a — Observational mirroring corollary
+
+**D-CONT-5a** — `TaskExecutor` may mirror continuous-valued physics state into the registry per tick (pose, joint velocities, contact-flag snapshot) as an observational projection (D-EXEC-5 phases 3–4). It may NOT perform categorical lifecycle state transitions (fixture occupancy, D-LIFE state changes). Lifecycle transitions are Phase-G, session-owned, verdict-conditioned.
+
+*Rationale.* Per-tick mirroring populates the registry with values needed by per-tick observers and by the final-tick canonical pose. Lifecycle transitions are categorical decisions about replay-authoritative state — they belong with the single orchestration authority (D-SESS-1), not with a subordinate executor.
+
+### 12.7 D-CONT-6 — Boundary snapshot canonicality
+
+A **boundary snapshot** is the serialized artifact captured at the `pre_node` and `post_node` checkpoints of every orchestration tick (D-EXEC-10). Once written, its canonical-JSON hash is replay-authoritative and participates in every L3 replay-identity comparison (D-REPLAY-1).
+
+The boundary snapshot serializer is **not** "registry serialization." It is a **replay-authoritative canonicalization boundary** — the precise interface at which the runtime's open-world state is projected down to a closed-world replay identity. Modifying it modifies the contract.
+
+#### 12.7.1 Allowlist-only serialization
+
+**D-CONT-6** — Boundary snapshot serialization is **allowlist-only**. Snapshots are constructed by explicit enumeration of authoritative fields, never by filtering a full state dump.
+
+**Forbidden implementation pattern — blacklist filtering of a full dump.** Any future field added to the source mapping leaks into the snapshot until someone remembers to delete it.
+
+```python
+# FORBIDDEN — serialization-by-subtraction.
+snapshot = registry.to_dict()
+del snapshot["velocity"]
+del snapshot["contact_manifold"]
+# A new registry field added next quarter silently lands in the snapshot
+# and silently joins the replay-identity hash. The contract is breached
+# without a single test failing.
+```
+
+**Required implementation pattern — serialization-by-enumeration.** Adding a field to the source mapping has no effect on the snapshot unless the allowlist is updated, which is a deliberate, reviewable contract revision.
+
+```python
+# REQUIRED — explicit enumeration from D-CONT-1.
+snapshot = {
+    "schema_version": BOUNDARY_SNAPSHOT_SCHEMA_VERSION,
+    "kind":           kind,           # "pre_node" | "post_node"
+    "node_id":        node_id,
+    "seq":            seq,
+    "objects": {
+        oid: {
+            "pose_m":      [float(x), float(y), float(z)],
+            "dlife_state": dlife_state,
+        }
+        for oid, (pose, dlife_state) in sorted(authoritative_objects.items())
+    },
+    "fixtures": {
+        fid: {"occupied_by": occupied_by}
+        for fid, occupied_by in sorted(authoritative_fixtures.items())
+    },
+    "session": {
+        "completed":    sorted(session_completed),
+        "failed":       sorted(session_failed),
+        "retry_counts": [
+            [nid, session_retry_counts.get(nid, 0)]
+            for nid in sorted(session_retry_counts)
+        ],
+    },
+}
+```
+
+Iteration over any mapping during snapshot serialization uses `sorted(keys)`. Canonical-JSON encoding uses `sort_keys=True`, `ensure_ascii=True`, `allow_nan=False`, separators=(`","`, `":"`) — identical to the `canonical_dumps` helper in [`orchestration/package.py`](../isaac_factory/extensions/cell_authoring/cell_authoring/orchestration/package.py).
+
+**Allowed snapshot content:**
+
+* object D-LIFE state, per `object_id` (D-CONT-1);
+* fixture occupancy, per `fixture_id` (D-CONT-1, D-CONT-5);
+* canonical object pose (last-tick `update_object_pose` value), per `object_id` (D-CONT-1);
+* session orchestration sets (`_completed`, `_failed`, `_retry_counts`, `_node_runtime`);
+* deterministic event-ordering metadata (`seq`, `orchestration_tick`, source `node_id`, snapshot `kind`);
+* `schema_version` constant per snapshot kind (D-TRACE-6).
+
+**Forbidden snapshot content** (this list is normative):
+
+* rigid-body linear velocity (D-CONT-2);
+* rigid-body angular velocity (D-CONT-2);
+* contact manifold cache state (D-CONT-2);
+* sleep/wake state (D-CONT-2);
+* solver warm-start / convergence residuals (D-CONT-2);
+* articulation stabilization state (D-CONT-2);
+* runtime diagnostics (`wall_ns`, `wall_clock_s`, profile timings) (D-TRACE-4);
+* per-tick aggregate metrics (motion peaks, accelerations, EE speeds, joint vel peaks) (D-CONT-2);
+* derived motion-quality aggregates;
+* transient executor-local measurements (probe intermediates, `prev_jvel`, contact-tick scratch state) (D-SESS-4);
+* any timestamp not derivable from `seq` + `orchestration_tick` (D-SCHED-11);
+* observational-only registry mirrors not explicitly enumerated in D-CONT-1 (e.g. `RobotState.joint_velocities_rad_s`, intermediate `ContactState` flags) (D-CONT-7);
+* any field whose presence-or-absence in a future PhysX/Isaac version could differ.
+
+#### 12.7.2 D-CONT-6a — Snapshot identity rule
+
+**D-CONT-6a** — Two boundary snapshots have **equal identity** if and only if their canonical-JSON encodings are byte-equal. A snapshot may not carry equality-relevant data outside its canonical-JSON form. Sidecar files, diagnostic JSON, and metadata sibling artifacts are forbidden from contributing to snapshot identity even when they sit in the same `sessions/<sid>/registry/` directory.
+
+#### 12.7.3 D-CONT-6b — Forward-compatibility
+
+**D-CONT-6b** — Snapshot `schema_version` is mandatory. A snapshot read at replay time whose `schema_version` differs from the comparator's expected version is **refused**, not coerced. There is no automatic forward migration of snapshots. Cites D-TRACE-6.
+
+#### 12.7.4 D-CONT-6c — Snapshot projection purity
+
+**D-CONT-6c** — The `boundary_snapshot(...)` projector MUST be:
+
+* **pure-function** — no instance state, no class state;
+* **side-effect free** — no I/O, no event emission, no registry mutation, no logging that influences identity;
+* **deterministic** — identical authoritative inputs produce identical outputs;
+* **allowlist-only** — fields are enumerated explicitly (D-CONT-6);
+* **independent of runtime clocks** — no wall-clock reads (D-SCHED-11);
+* **independent of simulator-private state** — no PhysX queries, no scene reads, no live handle dereferences;
+* **independent of incidental registry fields** — fields not in the D-CONT-1 allowlist are not read, not iterated, not even probed for existence.
+
+Two calls with identical authoritative inputs MUST produce byte-identical canonical-JSON output. A unit test asserting this property is required by every implementation of the projector.
+
+*Rationale.* `boundary_snapshot` is the choke point at which open-world simulator state becomes closed-world replay identity. Any impurity in the projector — a wall-clock read, a hash dependent on Python object id, a `dict.items()` call on an unsorted map — silently couples replay identity to runtime-environmental variables. The projector's purity is not an optimization; it is the contract.
+
+### 12.8 D-CONT-7 — Observational projection discipline
+
+**D-CONT-7** — A registry field written by per-tick observational projection is replay-authoritative if and only if it is **explicitly enumerated** by D-CONT-1. Every other registry field written by the executor is observational only.
+
+**Presence inside the registry does not imply continuity authority.** Membership in the `CellStateRegistry` confers no authority on its own. Authority is conferred explicitly and only by D-CONT-1.
+
+Registry-field classification for Phase 4B:
+
+| registry field | written by | authoritative under D-CONT-1? |
+|---|---|---|
+| `objects[oid].pose_m` | per-tick observational projection | **yes** at last-tick value only; intermediate per-tick values are observational |
+| `objects[oid].yaw_rad` | per-tick observational projection | **yes** at last-tick value (mirrors `pose_m`) |
+| `objects[oid].contact_with` | per-tick observational projection | **no** — observational only |
+| `objects[oid].metadata` | (free-form scratchpad) | **no** — diagnostic |
+| `fixtures[fid].occupied_by` | session-committed in Phase G (D-CONT-5) | **yes** |
+| `fixtures[fid].metadata` | (free-form scratchpad) | **no** — diagnostic |
+| `robots[rid].joint_positions_rad` | per-tick observational projection | **no** — observational only |
+| `robots[rid].joint_velocities_rad_s` | per-tick observational projection | **no** — observational only (also D-CONT-2 forbidden) |
+| `robots[rid].wrist_3_xyz` | per-tick observational projection | **no** — observational only |
+| `robots[rid].gripper_state` | per-tick observational projection | **no** — observational only |
+| `robots[rid].gripper_drive_target` | per-tick observational projection | **no** — observational only |
+| `task.step`, `task.phase`, `task.task_id`, `task.started_at_step` | per-tick / lifecycle transition | **no** — diagnostic |
+| `contact.*` (all flags + `pad_pen_max_mm`) | per-tick observational projection | **no** — the only authoritative claim about contact at a boundary is "`ContactState()` zeroed" (D-CONT-4) |
+| `metrics` (free-form scratchpad) | per-tick observational projection | **no** — diagnostic |
+
+**Consequence for snapshot construction.** The boundary snapshot serializer is **not** `registry.snapshot()` — that method emits every registry field, observational and authoritative alike. Step 8 introduces a separate `boundary_snapshot(...)` projector that emits only the D-CONT-1 allowed set. The full `registry.snapshot()` remains available for diagnostics; its output never enters a replay-identity hash.
+
+#### 12.8.1 D-CONT-7a — Forward discipline
+
+**D-CONT-7a** — A future contributor who adds a new registry-write site MUST classify it on landing as either:
+
+* **authoritative** — in which case D-CONT-1 is amended in the same patch and the `boundary_snapshot` allowlist is extended, with a fingerprint-version bump (D-TRACE-6) and a forward-compat plan; or
+* **observational/diagnostic** — in which case it is excluded from `boundary_snapshot` and the field's docstring states "observational projection only, not authoritative continuity state."
+
+A write site with unclassified status is a contract violation. Pull-request review for any patch touching [`tasks/registry.py`](../isaac_factory/extensions/cell_authoring/cell_authoring/tasks/registry.py), [`tasks/executor.py`](../isaac_factory/extensions/cell_authoring/cell_authoring/tasks/executor.py), or [`orchestration/session.py`](../isaac_factory/extensions/cell_authoring/cell_authoring/orchestration/session.py) MUST cite each registry-write classification.
+
+### 12.9 Contributor discipline — field classification on landing
+
+The architecture is now **replay-authority-driven** rather than convenience-state-driven. Every field added to a replay-touching surface must be classified at the time of landing, in the same patch that introduces it. Unclassified fields are contract violations regardless of intent.
+
+Replay-touching surfaces requiring classification on every field addition:
+
+| surface | classification required |
+|---|---|
+| `CellStateRegistry` field | authoritative (with D-CONT-1 amendment) or observational/diagnostic (with exclusion confirmation) |
+| `TaskResult` field | authoritative-evidence (input to D-CONT-5 commit) or observational/diagnostic |
+| event payload field | replay-authoritative (enters `events.jsonl` identity) or diagnostic (`wall_ns`-class) |
+| boundary snapshot schema field | authoritative-only (a snapshot field is by construction authoritative; D-CONT-6b governs forward-compat bumps) |
+| `Predicate` configuration field | replay-authoritative (enters predicate fingerprint) — predicates are pure functions of D-CONT-1 state, no other classification permitted |
+
+Classification lives in the field's docstring or its containing dataclass docstring. A reviewer's first job on a Phase 4B+ patch is to verify every new field is classified. A reviewer's second job is to verify the classification matches the field's use sites.
+
+*Rationale.* Phase 4A landed with implicit classification — "if I wrote it down, someone will figure out what it means later." Step 8 makes classification explicit because replay identity now depends on it. The contributor-discipline note is the human-process complement to D-CONT-7a's mechanical rule.
+
+### 12.10 Preserved architectural constraints
+
+This contract section explicitly preserves and does NOT relax the following architectural constraints from §1–§9:
+
+* **No new top-level orchestration phase.** Boundary continuity is embedded in the outgoing node's Phase G and the incoming node's Phase B/C. The D-EXEC-1 7-phase order is unchanged. Preserves D-EXEC-3.
+
+* **No replay-recovery machinery.** A failed boundary precondition stalls the session deterministically. There is no recovery path (D-FORBID-9).
+
+* **No retry semantics.** `_retry_counts` is plumbed but unconsumed in Step 8. Step 9 lands retries with their own conformance to this section.
+
+* **No async orchestration.** D-FORBID-1, D-FORBID-2. Synchronous, single-process, single-threaded with respect to PhysX, sequential with respect to task execution (D-SCALE-1).
+
+* **No speculative state handling.** D-FORBID-9. Boundary snapshots record what happened; they do not record what might happen.
+
+* **ExecutionSession remains the single orchestration authority.** D-SESS-1. D-CONT-5 strengthens this by moving fixture-occupancy mutation from the subordinate executor up to the session.
+
+* **Replay-authoritative surfaces remain minimal and explicitly enumerated.** D-CONT-1 defines the set. Expansion is a contract revision, not an implementation detail.
+
+### 12.11 Step 8 scope restatement
+
+Step 8 is **not** about orchestration power. The two-node test job is a validation vehicle for the boundary contract, not a feature deliverable.
+
+Step 8 is proving:
+
+> **Deterministic retained-state handoff with contamination-resistant replay-authoritative continuity semantics, under selective authoritative persistence semantics (D-CONT-4) and allowlist-only canonicalization (D-CONT-6).**
+
+The load-bearing assertions are:
+
+1. The `boundary_snapshot(...)` projector is pure, allowlist-only, deterministic (D-CONT-6, D-CONT-6c).
+2. The boundary interval is PhysX-quiescent (D-CONT-3).
+3. Fixture-occupancy authority lives only in `ExecutionSession.step()` Phase G (D-CONT-5).
+4. The forbidden non-authoritative state (D-CONT-2) does not influence snapshot hashes (D-CONT-6 contamination test).
+5. The Phase 4A 32/32 regression surface is preserved.
+
+If the two-node exercise passes but the contamination test in (4) fails, Step 8 has not landed.
+
+---
+
 **End of deterministic-semantics contract.**
 
 This document binds [docs/phase_4b_orchestration_architecture.md](phase_4b_orchestration_architecture.md) and every Phase 4B implementation step that follows. On adoption, the next architectural artifact is the step-1 implementation note for `EventBus` + event taxonomy, which **must** cite this contract for every dispatch / ordering / subscriber-topology choice it makes.
