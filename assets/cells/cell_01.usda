@@ -1,0 +1,615 @@
+#usda 1.0
+(
+    "cell_authoring: built from configs schema_version=0.4.0"
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    def PhysicsScene "PhysicsScene"
+    {
+        vector3f physics:gravityDirection = (0, 0, -1)
+        float physics:gravityMagnitude = 9.81
+        custom bool physxScene:enableEnhancedDeterminism = 1
+        custom token physxScene:frictionType = "patch"
+        custom uint physxScene:minPositionIterationCount = 64
+        custom uint physxScene:minVelocityIterationCount = 16
+        custom token physxScene:solverType = "TGS"
+        custom uint physxScene:timeStepsPerSecond = 60
+    }
+
+    def Xform "Lights"
+    {
+        def DomeLight "DomeLight"
+        {
+            float inputs:intensity = 1000
+            uniform token[] xformOpOrder = []
+        }
+    }
+
+    def Scope "Materials"
+    {
+        def Scope "Physics"
+        {
+            def Material "BeltSurface" (
+                prepend apiSchemas = ["PhysicsMaterialAPI", "PhysxMaterialAPI"]
+            )
+            {
+                float physics:density = 1500
+                float physics:dynamicFriction = 1.2
+                float physics:restitution = 0
+                float physics:staticFriction = 1.5
+                custom token physxMaterial:dampingCombineMode = "average"
+                custom token physxMaterial:frictionCombineMode = "max"
+                custom token physxMaterial:restitutionCombineMode = "average"
+            }
+
+            def Material "Consumable" (
+                prepend apiSchemas = ["PhysicsMaterialAPI", "PhysxMaterialAPI"]
+            )
+            {
+                float physics:density = 1000
+                float physics:dynamicFriction = 0.4
+                float physics:restitution = 0
+                float physics:staticFriction = 0.5
+                custom token physxMaterial:dampingCombineMode = "average"
+                custom token physxMaterial:frictionCombineMode = "max"
+                custom token physxMaterial:restitutionCombineMode = "average"
+            }
+
+            def Material "StaticFixture" (
+                prepend apiSchemas = ["PhysicsMaterialAPI", "PhysxMaterialAPI"]
+            )
+            {
+                float physics:density = 7800
+                float physics:dynamicFriction = 0.6
+                float physics:restitution = 0
+                float physics:staticFriction = 0.8
+                custom token physxMaterial:dampingCombineMode = "average"
+                custom token physxMaterial:frictionCombineMode = "max"
+                custom token physxMaterial:restitutionCombineMode = "average"
+            }
+
+            def Material "GripperPad" (
+                prepend apiSchemas = ["PhysicsMaterialAPI", "PhysxMaterialAPI"]
+            )
+            {
+                float physics:density = 1100
+                float physics:dynamicFriction = 1.8
+                float physics:restitution = 0
+                float physics:staticFriction = 2
+                custom token physxMaterial:dampingCombineMode = "average"
+                custom token physxMaterial:frictionCombineMode = "max"
+                custom token physxMaterial:restitutionCombineMode = "average"
+            }
+        }
+    }
+
+    def Scope "Collisions"
+    {
+        def PhysicsCollisionGroup "Environment"
+        {
+            prepend rel collection:colliders:includes = [
+                </World/Environment/Cage_East/collider>,
+                </World/Environment/Cage_North/collider>,
+                </World/Environment/Cage_South/collider>,
+                </World/Environment/Cage_West/collider>,
+                </World/Environment/Floor/collider>,
+                </World/Environment/RobotPedestal/collider>,
+                </World/Environment/WorkFixture/collider>,
+            ]
+        }
+
+        def PhysicsCollisionGroup "Machinery"
+        {
+            prepend rel collection:colliders:includes = [
+                </World/Machinery/Conveyor_InFeed/Belt>,
+                </World/Machinery/Conveyor_InFeed/Frame_East/collider>,
+                </World/Machinery/Conveyor_InFeed/Frame_West/collider>,
+            ]
+        }
+
+        def PhysicsCollisionGroup "Consumable"
+        {
+            prepend rel collection:colliders:includes = </World/Parts/Peg_01/collider>
+        }
+
+        def PhysicsCollisionGroup "Robot"
+        {
+            prepend rel collection:colliders:includes = </World/Robot>
+        }
+    }
+
+    def Xform "Environment"
+    {
+        def Xform "Floor" (
+            prepend inherits = </_StaticProp>
+        )
+        {
+            double3 xformOp:translate = (0, 0, -0.025)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+
+            def Cube "visual"
+            {
+                double size = 1
+                double3 xformOp:scale = (6, 6, 0.05)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+            }
+
+            def Cube "collider" (
+                prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                customData = {
+                    bool static_collider = 1
+                }
+            )
+            {
+                rel material:binding:physics = </World/Materials/Physics/StaticFixture> (
+                    bindMaterialAs = "weakerThanDescendants"
+                )
+                uniform token physics:approximation = "boundingCube"
+                custom token physxCollision:filterGroup = "environment"
+                uniform token purpose = "default"
+                double size = 1
+                double3 xformOp:scale = (6, 6, 0.05)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+            }
+        }
+
+        def Xform "Cage_East" (
+            prepend inherits = </_StaticProp>
+        )
+        {
+            double3 xformOp:translate = (2.975, 0, 0.75)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+
+            def Cube "visual"
+            {
+                double size = 1
+                double3 xformOp:scale = (0.05, 6, 1.5)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+            }
+
+            def Cube "collider" (
+                prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                customData = {
+                    bool static_collider = 1
+                }
+            )
+            {
+                rel material:binding:physics = </World/Materials/Physics/StaticFixture> (
+                    bindMaterialAs = "weakerThanDescendants"
+                )
+                uniform token physics:approximation = "boundingCube"
+                custom token physxCollision:filterGroup = "environment"
+                uniform token purpose = "default"
+                double size = 1
+                double3 xformOp:scale = (0.05, 6, 1.5)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+            }
+        }
+
+        def Xform "Cage_North" (
+            prepend inherits = </_StaticProp>
+        )
+        {
+            double3 xformOp:translate = (0, 2.975, 0.75)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+
+            def Cube "visual"
+            {
+                double size = 1
+                double3 xformOp:scale = (5.9, 0.05, 1.5)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+            }
+
+            def Cube "collider" (
+                prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                customData = {
+                    bool static_collider = 1
+                }
+            )
+            {
+                rel material:binding:physics = </World/Materials/Physics/StaticFixture> (
+                    bindMaterialAs = "weakerThanDescendants"
+                )
+                uniform token physics:approximation = "boundingCube"
+                custom token physxCollision:filterGroup = "environment"
+                uniform token purpose = "default"
+                double size = 1
+                double3 xformOp:scale = (5.9, 0.05, 1.5)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+            }
+        }
+
+        def Xform "Cage_South" (
+            prepend inherits = </_StaticProp>
+        )
+        {
+            double3 xformOp:translate = (0, -2.975, 0.75)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+
+            def Cube "visual"
+            {
+                double size = 1
+                double3 xformOp:scale = (5.9, 0.05, 1.5)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+            }
+
+            def Cube "collider" (
+                prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                customData = {
+                    bool static_collider = 1
+                }
+            )
+            {
+                rel material:binding:physics = </World/Materials/Physics/StaticFixture> (
+                    bindMaterialAs = "weakerThanDescendants"
+                )
+                uniform token physics:approximation = "boundingCube"
+                custom token physxCollision:filterGroup = "environment"
+                uniform token purpose = "default"
+                double size = 1
+                double3 xformOp:scale = (5.9, 0.05, 1.5)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+            }
+        }
+
+        def Xform "Cage_West" (
+            prepend inherits = </_StaticProp>
+        )
+        {
+            double3 xformOp:translate = (-2.975, 0, 0.75)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+
+            def Cube "visual"
+            {
+                double size = 1
+                double3 xformOp:scale = (0.05, 6, 1.5)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+            }
+
+            def Cube "collider" (
+                prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                customData = {
+                    bool static_collider = 1
+                }
+            )
+            {
+                rel material:binding:physics = </World/Materials/Physics/StaticFixture> (
+                    bindMaterialAs = "weakerThanDescendants"
+                )
+                uniform token physics:approximation = "boundingCube"
+                custom token physxCollision:filterGroup = "environment"
+                uniform token purpose = "default"
+                double size = 1
+                double3 xformOp:scale = (0.05, 6, 1.5)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+            }
+        }
+
+        def Xform "RobotPedestal" (
+            prepend inherits = </_StaticProp>
+        )
+        {
+            double3 xformOp:translate = (0, 0, 0.4)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+
+            def Cube "visual"
+            {
+                double size = 1
+                double3 xformOp:scale = (0.5, 0.5, 0.8)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+            }
+
+            def Cube "collider" (
+                prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                customData = {
+                    bool static_collider = 1
+                }
+            )
+            {
+                rel material:binding:physics = </World/Materials/Physics/StaticFixture> (
+                    bindMaterialAs = "weakerThanDescendants"
+                )
+                uniform token physics:approximation = "boundingCube"
+                custom token physxCollision:filterGroup = "environment"
+                uniform token purpose = "default"
+                double size = 1
+                double3 xformOp:scale = (0.5, 0.5, 0.8)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+            }
+        }
+
+        def Xform "WorkFixture" (
+            prepend inherits = </_StaticProp>
+        )
+        {
+            double3 xformOp:translate = (0.65, 0, 0.3)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+
+            def Cube "visual"
+            {
+                double size = 1
+                double3 xformOp:scale = (0.4, 0.4, 0.6)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+            }
+
+            def Cube "collider" (
+                prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                customData = {
+                    bool static_collider = 1
+                }
+            )
+            {
+                rel material:binding:physics = </World/Materials/Physics/StaticFixture> (
+                    bindMaterialAs = "weakerThanDescendants"
+                )
+                uniform token physics:approximation = "boundingCube"
+                custom token physxCollision:filterGroup = "environment"
+                uniform token purpose = "default"
+                double size = 1
+                double3 xformOp:scale = (0.4, 0.4, 0.6)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+            }
+        }
+    }
+
+    def Xform "Machinery"
+    {
+        def Xform "Conveyor_InFeed"
+        {
+            def Xform "Frame_East" (
+                prepend inherits = </_StaticProp>
+            )
+            {
+                double3 xformOp:translate = (-1.55, -0.225, 0.125)
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+
+                def Cube "visual"
+                {
+                    double size = 1
+                    double3 xformOp:scale = (2, 0.05, 0.25)
+                    uniform token[] xformOpOrder = ["xformOp:scale"]
+                }
+
+                def Cube "collider" (
+                    prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                    customData = {
+                        bool static_collider = 1
+                    }
+                )
+                {
+                    rel material:binding:physics = </World/Materials/Physics/StaticFixture> (
+                        bindMaterialAs = "weakerThanDescendants"
+                    )
+                    uniform token physics:approximation = "boundingCube"
+                    custom token physxCollision:filterGroup = "machinery"
+                    uniform token purpose = "default"
+                    double size = 1
+                    double3 xformOp:scale = (2, 0.05, 0.25)
+                    uniform token[] xformOpOrder = ["xformOp:scale"]
+                }
+            }
+
+            def Xform "Frame_West" (
+                prepend inherits = </_StaticProp>
+            )
+            {
+                double3 xformOp:translate = (-1.55, 0.225, 0.125)
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+
+                def Cube "visual"
+                {
+                    double size = 1
+                    double3 xformOp:scale = (2, 0.05, 0.25)
+                    uniform token[] xformOpOrder = ["xformOp:scale"]
+                }
+
+                def Cube "collider" (
+                    prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+                    customData = {
+                        bool static_collider = 1
+                    }
+                )
+                {
+                    rel material:binding:physics = </World/Materials/Physics/StaticFixture> (
+                        bindMaterialAs = "weakerThanDescendants"
+                    )
+                    uniform token physics:approximation = "boundingCube"
+                    custom token physxCollision:filterGroup = "machinery"
+                    uniform token purpose = "default"
+                    double size = 1
+                    double3 xformOp:scale = (2, 0.05, 0.25)
+                    uniform token[] xformOpOrder = ["xformOp:scale"]
+                }
+            }
+
+            def Cube "Belt" (
+                prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "PhysxSurfaceVelocityAPI", "MaterialBindingAPI"]
+                customData = {
+                    bool static_collider = 1
+                }
+                prepend inherits = </_BeltSurface>
+            )
+            {
+                rel material:binding:physics = </World/Materials/Physics/BeltSurface> (
+                    bindMaterialAs = "weakerThanDescendants"
+                )
+                uniform token physics:approximation = "boundingCube"
+                bool physics:kinematicEnabled = 1
+                float physics:mass = 1
+                custom token physxCollision:filterGroup = "machinery"
+                custom float3 physxSurfaceVelocity:surfaceAngularVelocity = (0, 0, 0)
+                custom float3 physxSurfaceVelocity:surfaceVelocity = (0.05, 0, 0)
+                custom bool physxSurfaceVelocity:surfaceVelocityEnabled = 1
+                double size = 1
+                double3 xformOp:scale = (2, 0.4, 0.05)
+                double3 xformOp:translate = (-1.55, 0, 0.625)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+            }
+        }
+    }
+
+    def Xform "Parts"
+    {
+        def Xform "Peg_01" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "PhysxRigidBodyAPI"]
+            customData = {
+                dictionary asset_validator = {
+                    string grounded = "true"
+                }
+            }
+            prepend inherits = </_DynamicPart>
+        )
+        {
+            float physics:mass = 0.1
+            custom float physxRigidBody:sleepThreshold = 0
+            custom float physxRigidBody:stabilizationThreshold = 0
+            double3 xformOp:translate = (-0.8, 0, 0.701)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+
+            def Cube "visual"
+            {
+                double size = 1
+                double3 xformOp:scale = (0.05, 0.05, 0.1)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+            }
+
+            def Cube "collider" (
+                prepend apiSchemas = ["PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "MaterialBindingAPI"]
+            )
+            {
+                rel material:binding:physics = </World/Materials/Physics/Consumable> (
+                    bindMaterialAs = "weakerThanDescendants"
+                )
+                uniform token physics:approximation = "boundingCube"
+                custom token physxCollision:filterGroup = "consumable"
+                uniform token purpose = "default"
+                double size = 1
+                double3 xformOp:scale = (0.05, 0.05, 0.1)
+                uniform token[] xformOpOrder = ["xformOp:scale"]
+            }
+        }
+    }
+
+    def Xform "Robot" (
+        prepend references = @./cell_01/robot/UniversalRobots/ur10e/ur10e.usd@
+        variants = {
+            string Gripper = "Robotiq_2f_140"
+        }
+    )
+    {
+        custom token physxCollision:filterGroup = "robot"
+        double3 xformOp:translate = (0, 0, 0.8)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        over "root_joint"
+        {
+            custom bool physxArticulation:enabledSelfCollisions = 0
+        }
+
+        over "joints"
+        {
+            over "shoulder_pan_joint"
+            {
+                float drive:angular:physics:damping = 100000
+                float drive:angular:physics:stiffness = 1000000
+                float drive:angular:physics:targetPosition = 16.882889
+                float state:angular:physics:position = 16.882889
+            }
+
+            over "shoulder_lift_joint"
+            {
+                float drive:angular:physics:damping = 100000
+                float drive:angular:physics:stiffness = 1000000
+                float drive:angular:physics:targetPosition = -129.76537
+                float state:angular:physics:position = -129.76537
+            }
+
+            over "elbow_joint"
+            {
+                float drive:angular:physics:damping = 100000
+                float drive:angular:physics:stiffness = 1000000
+                float drive:angular:physics:targetPosition = -108.3226
+                float state:angular:physics:position = -108.3226
+            }
+
+            over "wrist_1_joint"
+            {
+                float drive:angular:physics:damping = 100000
+                float drive:angular:physics:stiffness = 1000000
+                float drive:angular:physics:targetPosition = -211.93709
+                float state:angular:physics:position = -211.93709
+            }
+
+            over "wrist_2_joint"
+            {
+                float drive:angular:physics:damping = 100000
+                float drive:angular:physics:stiffness = 1000000
+                float drive:angular:physics:targetPosition = -89.951
+                float state:angular:physics:position = -89.951
+            }
+
+            over "wrist_3_joint"
+            {
+                float drive:angular:physics:damping = 100000
+                float drive:angular:physics:stiffness = 1000000
+                float drive:angular:physics:targetPosition = 106.89891
+                float state:angular:physics:position = 106.89891
+            }
+
+            over "ee_joint" (
+                prepend apiSchemas = ["PhysxJointAPI"]
+            )
+            {
+            }
+        }
+
+        over "ee_link"
+        {
+            over "Robotiq_2F_140" (
+                prepend apiSchemas = ["MaterialBindingAPI"]
+            )
+            {
+                rel material:binding:physics = </World/Materials/Physics/GripperPad> (
+                    bindMaterialAs = "weakerThanDescendants"
+                )
+            }
+        }
+    }
+}
+
+class "_BeltSurface" (
+    customData = {
+        string template_kind = "belt_surface"
+    }
+)
+{
+}
+
+class "_DynamicPart" (
+    customData = {
+        string template_kind = "dynamic_part"
+    }
+)
+{
+}
+
+class "_RobotLink" (
+    customData = {
+        string template_kind = "robot_link"
+    }
+)
+{
+}
+
+class "_StaticProp" (
+    customData = {
+        string template_kind = "static_prop"
+    }
+)
+{
+}
+

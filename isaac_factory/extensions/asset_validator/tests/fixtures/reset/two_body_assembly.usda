@@ -1,0 +1,33 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+# Two well-separated dynamic Cubes. Spawn-order capture should yield
+# both prims in lex order across all cycles. Reset returns each to its
+# authored pose.
+
+def Xform "World"
+{
+    def PhysicsScene "PhysicsScene"
+    {
+        vector3f physics:gravityDirection = (0, 0, -1)
+        float    physics:gravityMagnitude = 0
+    }
+
+    def Cube "Alpha" (apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI"])
+    {
+        double size = 1.0
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Cube "Beta" (apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI"])
+    {
+        double size = 1.0
+        double3 xformOp:translate = (5, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

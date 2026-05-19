@@ -1,0 +1,26 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+# A cube with PhysicsCollisionAPI but no RigidBodyAPI ancestor and
+# no customData.static_collider flag.
+# Expected: COLLIDER.NO_RIGID_BODY_ANCESTOR on /World/Loose.
+
+def Xform "World"
+{
+    def PhysicsScene "PhysicsScene"
+    {
+        vector3f physics:gravityDirection = (0, 0, -1)
+        float    physics:gravityMagnitude = 0
+    }
+
+    def Cube "Loose" (apiSchemas = ["PhysicsCollisionAPI"])
+    {
+        double size = 1.0
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

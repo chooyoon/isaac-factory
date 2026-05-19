@@ -1,0 +1,40 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+# Clean scene: static floor (CollisionAPI + customData.static_collider)
+# plus a dynamic cube (CollisionAPI + RigidBodyAPI on the same prim).
+# Expected ColliderValidator findings: only the MISSING_COLLISION_GROUP
+# warnings (filter group is not authored on these fixtures — that's a
+# separate concern). No NO_RIGID_BODY_ANCESTOR, no MESH_ON_DYNAMIC, no
+# RIGID_BODY_WITHOUT_COLLIDER, no DEGENERATE_AABB.
+
+def Xform "World"
+{
+    def PhysicsScene "PhysicsScene"
+    {
+        vector3f physics:gravityDirection = (0, 0, -1)
+        float    physics:gravityMagnitude = 0
+    }
+
+    def Cube "Floor" (
+        apiSchemas = ["PhysicsCollisionAPI"]
+        customData = { bool static_collider = true }
+    )
+    {
+        double size = 1.0
+        double3 xformOp:scale     = (10, 10, 0.1)
+        double3 xformOp:translate = (0, 0, -0.05)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+
+    def Cube "DynBox" (apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI"])
+    {
+        double size = 1.0
+        double3 xformOp:translate = (0, 0, 0.5)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

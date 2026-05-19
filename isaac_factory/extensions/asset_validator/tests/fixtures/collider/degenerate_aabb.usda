@@ -1,0 +1,28 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+# A "paper-thin" cube collider: size 1, scale Z = 1e-5 → AABB Z extent
+# of 1e-5 m = 10 µm, far below `min_aabb_extent_m` (default 1.0 × 10⁻⁴
+# m = 0.1 mm). PhysX simulation can't reliably handle this.
+# Expected: COLLIDER.DEGENERATE_AABB on /World/Paper.
+
+def Xform "World"
+{
+    def PhysicsScene "PhysicsScene"
+    {
+        vector3f physics:gravityDirection = (0, 0, -1)
+        float    physics:gravityMagnitude = 0
+    }
+
+    def Cube "Paper" (apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI"])
+    {
+        double size = 1.0
+        double3 xformOp:scale     = (1, 1, 0.00001)
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+}

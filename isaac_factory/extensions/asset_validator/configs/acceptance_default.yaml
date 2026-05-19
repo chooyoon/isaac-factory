@@ -1,0 +1,107 @@
+# Asset Validator — Default Acceptance Criteria (machine-readable mirror)
+#
+# This file is the YAML mirror of the numeric thresholds in
+# docs/asset_validator_acceptance.md. The dataclasses in
+# asset_validator/thresholds/schema.py are the implementation source of
+# truth; this YAML must stay in sync with both.
+#
+# Field names match `AcceptanceCriteria` and its nested dataclasses exactly,
+# so a loader (`thresholds.loader.load_criteria`, deferred) can deserialize
+# this directly into an `AcceptanceCriteria` instance.
+#
+# Sync rules:
+#   1. Every key here must correspond to a dataclass field in schema.py.
+#   2. Every dataclass field must appear here.
+#   3. Numeric values must match the acceptance-doc tables.
+#   4. A unit test (`tests/unit/test_acceptance_docs_in_sync.py`, deferred)
+#      will assert (1)+(2)+(3) on every PR.
+
+schema_version: "1.0.0"
+
+# =====================================================================
+# §1 — OverlapThresholds                  (acceptance §1)
+# =====================================================================
+overlap:
+  # Rule 1.1 — max penetration depth between non-fit pairs (FAIL above).
+  pen_depth_max_m:            0.001         # 1.0 mm
+  # Rule 1.2 — tighter tolerance for `expects_contact` pairs (WARN above).
+  pen_depth_max_fit_m:        0.0001        # 0.1 mm
+  # Rule 1.4 — convergence-step budget (wired but not yet enforced in v1).
+  convergence_max_steps:      5
+  # Internal — warmup steps before the measurement step.
+  physics_settle_pre_steps:   5
+
+# =====================================================================
+# §2 — TransformThresholds                (acceptance §2)
+# =====================================================================
+transform:
+  # Rule 2.3 — minimum scale magnitude per axis.
+  min_scale_magnitude:        0.001
+  # Rule 2.4 — maximum scale magnitude per axis.
+  max_scale_magnitude:        1000.0
+  # Rule 2.6 — quaternion magnitude tolerance.
+  quaternion_magnitude_min:   0.999
+  quaternion_magnitude_max:   1.001
+  # Rule 2.7 — rotation orthogonality (Frobenius norm of RᵀR-I).
+  rotation_orthogonality_eps: 0.0001
+  # Rule 2.8 — sanity bound on translation magnitude.
+  max_translation_magnitude_m: 1000000.0
+  # Static floating heuristic — set to null/None to disable.
+  floating_heuristic_z_m:     100.0
+
+# =====================================================================
+# §3 — ColliderThresholds                 (acceptance §3)
+# =====================================================================
+collider:
+  # Rule 3.3 — approximations allowed on dynamic (non-kinematic) bodies.
+  dynamic_allowed_approximations:
+    - box
+    - sphere
+    - capsule
+    - cylinder
+    - convexHull
+    - convexDecomposition
+  # Rule 3.4 — convex decomposition hull-count thresholds.
+  convex_decomp_hull_warn:    32
+  convex_decomp_hull_fail:    64
+  # Rule 3.5 — collider-AABB / visual-AABB max ratio per axis.
+  aabb_ratio_max:             1.10
+  # Rule 3.9 — rigid body mass sanity bounds (kg).
+  mass_min_kg:                0.001
+  mass_max_kg:                100000.0
+  # Rule 3.10 — mass vs density*volume agreement (fractional).
+  mass_density_tolerance:     0.10
+  # Stability heuristics (acceptance §3.11/§3.12 — code-only sources).
+  min_aabb_extent_m:          0.0001        # 0.1 mm
+  max_aabb_aspect_ratio:      1000.0
+
+# =====================================================================
+# §5.B — GroundingThresholds (static raycast variant)   (acceptance §5.B)
+# =====================================================================
+# Note: §5.A (dynamic settle-based grounding) is currently deferred;
+# its thresholds (`settle_steps`, `max_linear_drift_m_per_s`, etc.) are
+# documented in the acceptance doc but not yet present in the schema.
+grounding:
+  # AABB-bottom may sit at most this far ABOVE the support (FAIL above).
+  floating_tolerance_m:       0.005         # 5 mm
+  # AABB-bottom may sit at most this far BELOW the support (FAIL above).
+  buried_tolerance_m:         0.005         # 5 mm
+
+# =====================================================================
+# §6 — DeterministicResetThresholds       (acceptance §6)
+# =====================================================================
+deterministic_reset:
+  # Rule 6.1 / 6.2 — pose drift after reset vs initial.
+  translation_tolerance_m:              0.00001       # 1e-5 m
+  rotation_tolerance_rad:               0.0001        # 1e-4 rad
+  # Rule 6.3 / 6.4 — residual velocity at reset.
+  velocity_tolerance_m_per_s:           0.000001      # 1e-6 m/s
+  angular_velocity_tolerance_rad_per_s: 0.000001      # 1e-6 rad/s
+  # Rule 6.7a / 6.7b — inter-cycle pose match (after_step of cycle i vs cycle 1).
+  cycle_variance_translation_m:         0.00001
+  cycle_variance_rotation_rad:          0.0001
+  # User-added — max residual penetration at next t=0.
+  max_penetration_after_reset_m:        0.000001
+  # Rule 6.5 / 6.6 — mandatory prerequisites by default.
+  require_determinism_flag:             true
+  require_seed:                         true

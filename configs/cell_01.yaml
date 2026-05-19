@@ -1,0 +1,355 @@
+# Cell 01 — sprint-scoped configuration
+#
+# Single source of truth for everything cell_authoring emits.
+# Same config + same authoring code MUST produce a byte-identical
+# `.usda` (modulo USD's authoring banner). See sprint §6 gate 8.
+#
+# Schema versioning: bump `schema_version` on any breaking change;
+# the loader cross-checks against the supported set.
+
+schema_version: "0.4.0"
+
+cell:
+  id: "cell_01"
+  display_name: "Cell 01 — Peg-into-Housing"
+  description: >-
+    First industrial assembly cell. Single-robot peg-into-housing on tray
+    with conveyor in-feed / out-feed. Phase B baseline: PhysicsScene,
+    lights, floor, safety cage, robot pedestal, work fixture, in-feed
+    conveyor, and one peg consumable.
+
+runtime:
+  seed: 20260518
+
+  # Fixed 60 Hz physics step. Both physics_dt and rendering_dt must agree
+  # with the cell-runner; mismatch is a determinism hazard.
+  physics_dt:    0.016666666666666666   # 1/60 s
+  rendering_dt:  0.016666666666666666
+
+  # Authoritative across-runtime physics determinism flag. Read by Kit
+  # Python (Runtime B) via PhysxSchema.PhysxSceneAPI; authored by
+  # Runtime A as a `custom` attribute so usd-core can emit it without
+  # the PhysxSchema dependency.
+  enable_enhanced_determinism: true
+
+  # PGS (legacy) | TGS (recommended for assembly tasks).
+  # Phase 3E: raised solver iteration count for stiff pad-peg contact
+  # resolution. The parallel-jaw applies very stiff PD via the gripper
+  # drive (1e5 N·m/rad) and the pads make brief, deeply-penetrating
+  # contacts with the peg during the close. Default 16/4 iterations
+  # produced max_penetration ~15 mm and only 10 contact events per
+  # cycle; raising to 64/16 keeps the contacts well-resolved and lets
+  # the friction grasp actually engage.
+  solver_type: "TGS"
+  solver_position_iteration_count: 64
+  solver_velocity_iteration_count: 16
+
+  gravity:
+    direction: [0.0, 0.0, -1.0]
+    magnitude_m_per_s2: 9.81
+
+environment:
+  # Floor: top face at world z = 0 (the cell ground reference).
+  floor:
+    size_xy_m:   [6.0, 6.0]
+    thickness_m: 0.05
+
+  # Open-top perimeter cage. Walls sit on floor top, height in metres.
+  safety_cage:
+    wall_thickness_m: 0.05
+    height_m:         1.50
+
+  # Robot pedestal at the cell origin (0, 0). Top at z = height_m.
+  pedestal:
+    size_xy_m: [0.50, 0.50]
+    height_m:  0.80
+
+  # Work fixture in front of the pedestal (+X). Top at z = height_m.
+  work_fixture:
+    size_xy_m:  [0.40, 0.40]
+    height_m:   0.60
+    offset_x_m: 0.65   # pedestal centre at x=0, half-width 0.25; fixture half-width 0.20 → 0.40 gap edge-to-edge
+
+lighting:
+  dome_intensity: 1000.0
+
+# In-feed conveyor: belt transports parts in -X (toward the robot).
+# Geometry: belt is long along X, narrow along Y; rails on either side.
+# All translates are world-space prim centres.
+machinery:
+  - name: "Conveyor_InFeed"
+    # Conveyor centred at (-1.55, 0). The belt's east edge sits at
+    # x = -1.55 + 1.00 = -0.55; the pedestal's west edge is at x = -0.25.
+    # That leaves 0.30 m of clearance between the belt and the pedestal —
+    # enough for the rails (thickness 0.05 each) to not touch the pedestal.
+    translate_world_m: [-1.55, 0.0, 0.0]
+    belt_length_m:     2.00
+    belt_width_m:      0.40
+    belt_thickness_m:  0.05
+    belt_top_z_m:      0.65
+    rail_thickness_m:  0.05
+    rail_height_m:     0.25       # rails extend 0.10 m above belt top — side wall
+    # Phase 3E calibration: the empirical peg traversal speed under
+    # PhysxSurfaceVelocity in Isaac Sim 5.0 with the parallel-jaw
+    # gripper is ~2× the authored value (the rigid-on-rigid friction
+    # transport over-shoots its target velocity when the load is light).
+    # We halve the authored target so the *actual* peg speed lands at
+    # 0.10 m/s, matching what the open-loop IK trajectory was baked for.
+    # See logs/phase_3c_tail_telemetry.jsonl peg_traj records for
+    # the empirical calibration evidence.
+    belt_velocity_world_m_per_s: [+0.05, 0.0, 0.0]
+
+# Consumables. Phase B ships only one (the peg) to prove transport.
+# Housing + tray follow in Phase 2B.
+parts:
+  - name: "Peg_01"
+    # Phase 3E: the belt velocity has been calibrated to 0.05 m/s
+    # (yielding the IK-expected 0.10 m/s empirical peg speed). Peg start
+    # returns to the IK-designed value:
+    #     peg_start_x = -0.60 − (0.10 × 2.0) = -0.80
+    translate_world_m: [-0.80, 0.0, 0.701]
+    size_xyz_m:        [0.05, 0.05, 0.10]
+    mass_kg:           0.10                # 100 g peg — typical
+    approximation:     "box"               # Cube primitive — exact match
+
+# Phase 3A — UR10e mounted on the pedestal at world z = pedestal.height_m.
+# The Isaac Sim native UR10e asset is mirrored under
+# assets/cells/cell_01/robot/ (see scripts/fetch_ur10e_asset.py). The
+# mount is a single Xform that references the asset; the in-asset
+# root_joint is a PhysicsFixedJoint that anchors base_link to the
+# world frame at the composed pose — no cell-side fixed joint needed.
+#
+# Self-collision: disabled (industrial-standard for UR10e — adjacent
+# link colliders touch by joint connection, distant pairs are
+# unreachable in nominal poses). Re-enable per-link via the Robot
+# CollisionGroup's filteredGroups if a specific pair causes issues.
+robot:
+  # Path inside the NVIDIA-mirror tree under cells/cell_01/robot/.
+  # ``UniversalRobots/ur10e/ur10e.usd`` is sibling to ``Robotiq/2F-85/``
+  # so the in-asset variant reference (``../../Robotiq/2F-85/...``)
+  # resolves natively — see scripts/fetch_ur10e_asset.py for the layout.
+  asset_rel:                "assets/cells/cell_01/robot/UniversalRobots/ur10e/ur10e.usd"
+  mount_prim_path:          "/World/Robot"
+  translate_world_m:        [0.0, 0.0, 0.80]      # pedestal top
+  enable_self_collisions:   false
+  articulation_filter_group: "robot"
+
+  # Phase 3B gripper selection. Sets the asset's `Gripper` variantSet.
+  # ``None``       — no gripper (Phase 3A default)
+  # ``Robotiq_2f_85`` — ships without colliders in Isaac Sim 5.0 (unfit for grasp)
+  # ``Robotiq_2f_140`` — 140 mm stroke, 7-collider geometry (Phase 3B default)
+  # See logs/fetch_ur10e.log for variant audit results.
+  gripper_variant: "Robotiq_2f_140"
+
+  # Phase 3C: home pose = approach_pick IK solution from Lula
+  # (configs/cell_01_ik.yaml). EE points straight down at world
+  # (x=-0.60, z=0.85) — directly above the conveyor pickup pose.
+  # Verified against actual Kit FK in scripts/diag_verify_ik.py:
+  # wrist_3 ends at (-0.60, 0, 1.05), tool tip 0.20 m below.
+  home_pose_rad:
+    shoulder_pan:    0.294662
+    shoulder_lift:  -2.264833
+    elbow:          -1.890586
+    wrist_1:        -3.699000
+    wrist_2:        -1.569941
+    wrist_3:         1.865738
+
+  # Per-joint drive tuning. Stiffness governs target-tracking force,
+  # damping governs oscillation suppression. Values in radians/s units
+  # (PhysX angular drive convention).
+  # The defaults below are the same for every revolute joint; per-joint
+  # overrides can be added later when grasp tuning requires it.
+  joint_drive:
+    stiffness:  1.0e+6      # N⋅m/rad
+    damping:    1.0e+5      # N⋅m⋅s/rad
+
+  # Phase 3C trajectory — joint angles baked from scripts/solve_pick_place_ik.py
+  # (offline scipy.optimize on UR10e DH FK + 0.20 m tool offset).
+  #
+  # Conveyor sync (open-loop, deterministic):
+  #   * peg starts at world x = -0.80 (see parts: section)
+  #   * belt moves it at +0.10 m/s
+  #   * gripper descends to grasp pose over t ∈ [0, 2.0] s
+  #   * at t = 2.0 s, peg has traveled +0.20 m → arrives at x = -0.60
+  #     (the grasp pose's tool tip x) simultaneously with the gripper
+  #   * gripper closes at the start of the "grasp_close" waypoint
+  #
+  # Joint values in radians, from configs/cell_01_ik.yaml.
+  trajectory:
+    # All joint angles baked from Lula IK (scripts/solve_pick_place_ik.py
+    # + configs/cell_01_ik.yaml). Each waypoint's wrist_3 / tool0
+    # position has been verified against Kit FK in
+    # scripts/diag_verify_ik.py — actual robot pose matches the
+    # IK target to better than 1 mm.
+
+    # Waypoint 0: home = approach_pick pose; gripper open.
+    - name: "home"
+      duration_s: 0.0
+      joint_positions_rad:
+        shoulder_pan:    0.294662
+        shoulder_lift:  -2.264833
+        elbow:          -1.890586
+        wrist_1:        -3.699000
+        wrist_2:        -1.569941
+        wrist_3:         1.865738
+      gripper: "open"
+    # Phase 3L — clearance descent. Wrist drops only to z=0.78 (30 mm
+    # above the empirical wrist_3-vs-peg first-contact z=0.741, see
+    # logs/phase_3l_descent_telemetry.jsonl). Reached at t=1.0 s, before
+    # the peg arrives in the gripper's X-range (~t=1.45 s under current
+    # belt timing), so the wrist housing is OUT of the peg's z-column
+    # while the peg passes through.
+    - name: "grasp_clearance"
+      duration_s: 1.0
+      joint_positions_rad:
+        shoulder_pan:    0.294616
+        shoulder_lift:  -2.369633
+        elbow:          -1.880357
+        wrist_1:        -3.603954
+        wrist_2:        -1.570172
+        wrist_3:         1.865833
+      gripper: "open"
+    # Phase 3L — HOLD at clearance pose for 1.0 s while the peg
+    # traverses under the wrist. Waypoint name kept as "grasp" so the
+    # cycle test's belt-halt logic (which keys off
+    # ``name_to_end_t["grasp"]``) still fires at this moment (t=2.0 s).
+    # Pose is INTENTIONALLY the clearance pose here — the actual final
+    # 80 mm descent happens in the next waypoint, AFTER belt halt and
+    # peg settle.
+    - name: "grasp"
+      duration_s: 1.0
+      joint_positions_rad:
+        shoulder_pan:    0.294616
+        shoulder_lift:  -2.369633
+        elbow:          -1.880357
+        wrist_1:        -3.603954
+        wrist_2:        -1.570172
+        wrist_3:         1.865833
+      gripper: "open"
+    # Phase 3L — final 80 mm drop to the unchanged grasp pose (tool tip
+    # at (-0.60, 0, 0.70)). Fires AFTER belt halt at t=2.0 s, so the
+    # peg is stationary and centered when the wrist descends through
+    # the peg's z-column.
+    - name: "grasp_drop"
+      duration_s: 0.3
+      joint_positions_rad:
+        shoulder_pan:    0.294589
+        shoulder_lift:  -2.494560
+        elbow:          -1.850756
+        wrist_1:        -3.508462
+        wrist_2:        -1.570293
+        wrist_3:         1.865840
+      gripper: "open"
+    # Close the gripper at the unchanged grasp pose. Phase 3J 1.5 s
+    # close window preserved verbatim (do NOT shrink — high-stiffness
+    # drive needs the full ramp time to engage without ejection).
+    - name: "grasp_close"
+      duration_s: 1.5
+      joint_positions_rad:
+        shoulder_pan:    0.294589
+        shoulder_lift:  -2.494560
+        elbow:          -1.850756
+        wrist_1:        -3.508462
+        wrist_2:        -1.570293
+        wrist_3:         1.865840
+      gripper: "close"
+    # Waypoint 3: lift the peg up. Slowed (Phase 3C-tail) from 1.0 → 1.5 s
+    # to reduce the vertical-acceleration shock that destabilises the
+    # friction grasp the moment the peg first leaves the belt.
+    - name: "lift"
+      duration_s: 1.5
+      joint_positions_rad:
+        shoulder_pan:    0.294415
+        shoulder_lift:  -2.126223
+        elbow:          -1.879776
+        wrist_1:        -3.848290
+        wrist_2:        -1.571156
+        wrist_3:         1.865025
+      gripper: "close"
+    # Waypoint 4: transport — base sweep from x=-0.60 to x=+0.65 side.
+    # Phase 3N: joints re-baked with elbow-down warm-start + 2π unwrap
+    # (scripts/solve_pick_place_ik.py). The lift→approach_place LERP
+    # now flips shoulder_pan by ~+178° while keeping elbow ≈ -1.77 rad
+    # (vs lift's -1.88) — a smooth side-sweep around the base instead
+    # of a full-extension overhead arc. Old joints sent wrist_3 to
+    # z=2.28 m mid-transport (Phase 3M visual failure mode).
+    - name: "approach_place"
+      duration_s: 4.0
+      joint_positions_rad:
+        shoulder_pan:    3.412998
+        shoulder_lift:  -2.184815
+        elbow:          -1.769258
+        wrist_1:        -3.899986
+        wrist_2:        -1.569894
+        wrist_3:         4.983946
+      gripper: "close"
+    # Waypoint 5: descend to place pose. Phase 3N — same elbow branch.
+    - name: "place"
+      duration_s: 2.0
+      joint_positions_rad:
+        shoulder_pan:    3.412758
+        shoulder_lift:  -2.499025
+        elbow:          -1.749861
+        wrist_1:        -3.604545
+        wrist_2:        -1.571176
+        wrist_3:         4.982636
+      gripper: "close"
+    # Waypoint 6: open the gripper to release the peg.
+    - name: "release"
+      duration_s: 0.5
+      joint_positions_rad:
+        shoulder_pan:    3.412758
+        shoulder_lift:  -2.499025
+        elbow:          -1.749861
+        wrist_1:        -3.604545
+        wrist_2:        -1.571176
+        wrist_3:         4.982636
+      gripper: "open"
+    # Waypoint 7: lift away from the placed peg.
+    - name: "retract_above_place"
+      duration_s: 1.0
+      joint_positions_rad:
+        shoulder_pan:    3.412998
+        shoulder_lift:  -2.184815
+        elbow:          -1.769258
+        wrist_1:        -3.899986
+        wrist_2:        -1.569894
+        wrist_3:         4.983946
+      gripper: "open"
+    # Waypoint 8: return to home pose.
+    - name: "return_home"
+      duration_s: 2.5
+      joint_positions_rad:
+        shoulder_pan:    0.294662
+        shoulder_lift:  -2.264833
+        elbow:          -1.890586
+        wrist_1:        -3.699000
+        wrist_2:        -1.569941
+        wrist_3:         1.865738
+      gripper: "open"
+
+  # Phase 3G: lateral-clamping parallel-jaw gripper (see
+  # scripts/build_lateral_clamp_gripper.py). Each side is a long rigid
+  # arm pivoting at the base; the inner X face of each arm IS the pad.
+  # Closure brings the two pad faces together along the world closure
+  # axis. v2 calibration: +0.25 rad finger_joint drives the arms inward
+  # (sign tuned empirically against the cell's ee_link / ee_joint /
+  # base.orient composition chain).
+  # Phase 3K: prismatic-jaw gripper. ``close_position_rad`` is RE-USED
+  # as the closure stroke target in METRES (the field name is kept for
+  # cell-config schema backwards-compat; for prismatic joints the
+  # value is interpreted by the trajectory player as the linear drive
+  # target instead of radians). open=0 keeps pads at authored
+  # ±PIVOT_Y_OFFSET; close=-0.030 slides each pad 30 mm inward,
+  # bringing the 75 mm open gap down to 15 mm (peg width 50 mm − 35 mm
+  # overlap → firm clamp).
+  gripper:
+    drive_joint_name:  "finger_joint"
+    open_position_rad:  0.0
+    close_position_rad: -0.030
+    drive_stiffness:    1.0e+5
+    drive_damping:      1.0e+4
+
+paths:
+  cell_stage:  "assets/cells/cell_01.usda"
+  output_root: "outputs/cell_validation"

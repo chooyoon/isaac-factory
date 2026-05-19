@@ -1,0 +1,38 @@
+{
+  "asset_uri": "file:///home/cap2/last/isaac_factory/extensions/asset_validator/tests/fixtures/grounding/buried_box.usda",
+  "counts": {
+    "FAIL": 1,
+    "INFO": 0,
+    "WARN": 0
+  },
+  "criteria_digest": "sha256:5b84144da91ed2302e55756522899997999de5ce131fbf01ae8a821a1e446762",
+  "criteria_path": "/home/cap2/last/isaac_factory/extensions/asset_validator/configs/acceptance_default.yaml",
+  "duration_seconds": 0.0,
+  "issues": [
+    {
+      "code": "GROUNDING.BURIED",
+      "message": "Object '/World/Box' is buried: AABB bottom is 1000.000 mm BELOW support '/World/Floor' (threshold 5.000 mm).",
+      "metric": {
+        "aabb_bottom_z_m": -1.0,
+        "gap_m": -1.0,
+        "support_hit_z_m": 0.0
+      },
+      "prim_paths": [
+        "/World/Box"
+      ],
+      "severity": "FAIL",
+      "threshold": {
+        "buried_tolerance_m": 0.005
+      },
+      "validator": "grounding"
+    }
+  ],
+  "schema_version": "1.1.0",
+  "seed": 0,
+  "started_at": "2026-05-18T12:00:00+00:00",
+  "status": "FAIL",
+  "validators_run": [
+    "grounding"
+  ],
+  "validators_skipped": []
+}

@@ -1,0 +1,28 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+# A body with an attribute whose name matches the
+# "random...seed" heuristic — surfaces RESET.NON_DETERMINISTIC_AUTHORING
+# (WARN). The attribute is `custom` so USD accepts it without a
+# registered schema.
+
+def Xform "World"
+{
+    def PhysicsScene "PhysicsScene"
+    {
+        vector3f physics:gravityDirection = (0, 0, -1)
+        float    physics:gravityMagnitude = 0
+    }
+
+    def Cube "Random" (apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI"])
+    {
+        double size = 1.0
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        custom int physxRigidBody:randomizedSeed = 42
+    }
+}

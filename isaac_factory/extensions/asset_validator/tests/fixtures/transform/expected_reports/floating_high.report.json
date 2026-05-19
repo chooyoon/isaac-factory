@@ -1,0 +1,36 @@
+{
+  "asset_uri": "file:///home/cap2/last/isaac_factory/extensions/asset_validator/tests/fixtures/transform/floating_high.usda",
+  "counts": {
+    "FAIL": 0,
+    "INFO": 0,
+    "WARN": 1
+  },
+  "criteria_digest": "sha256:5b84144da91ed2302e55756522899997999de5ce131fbf01ae8a821a1e446762",
+  "criteria_path": "/home/cap2/last/isaac_factory/extensions/asset_validator/configs/acceptance_default.yaml",
+  "duration_seconds": 0.0,
+  "issues": [
+    {
+      "code": "TRANSFORM.FLOATING_HEURISTIC",
+      "message": "Prim '/World/Box' has local translate.z=200.000 m exceeding the floating-heuristic threshold 100.0 m. Static check only; authoritative grounding is the GroundingValidator (dynamic).",
+      "metric": {
+        "translate_z_m": 200.0
+      },
+      "prim_paths": [
+        "/World/Box"
+      ],
+      "severity": "WARN",
+      "threshold": {
+        "floating_heuristic_z_m": 100.0
+      },
+      "validator": "transform"
+    }
+  ],
+  "schema_version": "1.1.0",
+  "seed": 0,
+  "started_at": "2026-05-18T12:00:00+00:00",
+  "status": "WARN",
+  "validators_run": [
+    "transform"
+  ],
+  "validators_skipped": []
+}

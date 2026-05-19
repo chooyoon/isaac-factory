@@ -1,0 +1,20 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+# `xformOpOrder` references an op (`xformOp:rotateXYZ`) that isn't
+# actually authored on the prim — hierarchy corruption.
+# Expected: TRANSFORM.XFORMOP_ORDER_INVALID (FAIL) on /World/Box.
+
+def Xform "World"
+{
+    def Cube "Box"
+    {
+        double size = 1
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ"]
+    }
+}

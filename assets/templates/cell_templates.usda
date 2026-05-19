@@ -1,0 +1,80 @@
+#usda 1.0
+(
+    doc = "Cell template class prims. Imported by cell stages via subLayers; instances inherit one of the classes below to declare which contract they follow. See cell_authoring.templates module docstring for the full design rationale."
+    upAxis = "Z"
+    metersPerUnit = 1
+)
+
+
+class Xform "_StaticProp"
+(
+    documentation = '''Static, collision-only environment prop. Instances:
+  * carry a sibling /visual (Imageable only) + /collider (CollisionAPI only)
+  * tag the collider with `customData.static_collider = true`
+  * author `physxCollision:filterGroup`
+  * do NOT apply UsdPhysics.RigidBodyAPI
+'''
+    customData = {
+        string template_kind = "static_prop"
+    }
+)
+{
+}
+
+
+class Xform "_DynamicPart"
+(
+    documentation = '''Dynamic rigid-body consumable. Instances:
+  * carry a sibling /visual + /collider
+  * apply UsdPhysics.RigidBodyAPI + UsdPhysics.MassAPI on the part Xform
+  * use a collider approximation in `ColliderThresholds.dynamic_allowed_approximations`
+    (default: convexHull when authored from a mesh, box / sphere / capsule / cylinder
+    when from a primitive)
+  * author mass in [1e-3, 1e+5] kg
+  * tag with `customData.asset_validator.grounded = "true"`
+  * author `physxCollision:filterGroup`
+'''
+    customData = {
+        string template_kind = "dynamic_part"
+    }
+)
+{
+}
+
+
+class Xform "_BeltSurface"
+(
+    documentation = '''Kinematic conveyor belt surface. Instances:
+  * carry a sibling /visual + /collider (box approximation)
+  * apply UsdPhysics.RigidBodyAPI with kinematicEnabled = true
+  * author PhysxSurfaceVelocityAPI custom attributes (Runtime B reads these
+    via PhysxSchema.PhysxSurfaceVelocityAPI without translation)
+  * tag the collider with `customData.static_collider = true`
+    (it is the static-friction source; it does not move under physics)
+  * author `physxCollision:filterGroup = "machinery"`
+  * NEVER receive transform animation as a transport substitute
+'''
+    customData = {
+        string template_kind = "belt_surface"
+    }
+)
+{
+}
+
+
+class Xform "_RobotLink"
+(
+    documentation = '''Articulated robot link. Instances:
+  * carry a sibling /visual + /collider
+  * apply UsdPhysics.RigidBodyAPI (kinematicEnabled determined by joint topology)
+  * tag the prop with `customData.asset_validator.grounded = "kinematic"`
+    for the base link, omit for free intermediate links
+  * author `physxCollision:filterGroup = "robot"`
+  * full implementation lands in Phase 3A when the UR10e is wired up.
+'''
+    customData = {
+        string template_kind = "robot_link"
+    }
+)
+{
+}

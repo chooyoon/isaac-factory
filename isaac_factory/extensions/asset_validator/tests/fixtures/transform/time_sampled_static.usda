@@ -1,0 +1,24 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+# Translate is time-sampled but the prim isn't marked dynamic. The
+# default sample value is clean, so only the time-sampling rule fires.
+# Expected: TRANSFORM.TIME_SAMPLED_ON_STATIC (WARN) on /World/Box.
+
+def Xform "World"
+{
+    def Cube "Box"
+    {
+        double size = 1
+        double3 xformOp:translate = (0, 0, 0)
+        double3 xformOp:translate.timeSamples = {
+            0: (0, 0, 0),
+            1: (1, 0, 0),
+        }
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

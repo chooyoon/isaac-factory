@@ -1,0 +1,36 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+# Ceiling-mounted lamp, intentionally kinematic at z=3.0 with floor
+# beneath at z=0. Because intent="kinematic", the validator skips the
+# gap classification (per acceptance §5.B). NO_SUPPORT_FOUND would
+# fire only if no support existed; here the floor is present so the
+# probe yields zero issues.
+
+def Xform "World"
+{
+    def Cube "Floor"
+    {
+        double size = 1
+        double3 xformOp:scale = (10, 10, 0.1)
+        double3 xformOp:translate = (0, 0, -0.05)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+
+    def Cube "Lamp" (
+        customData = {
+            dictionary asset_validator = {
+                token grounded = "kinematic"
+            }
+        }
+    )
+    {
+        double size = 0.3
+        double3 xformOp:translate = (0, 0, 3.0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

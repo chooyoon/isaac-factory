@@ -1,0 +1,67 @@
+# =============================================================================
+# .gitignore — Industrial Digital Twin Workspace
+# Authoritative scope: matches `gitignored` annotations in docs/runtime_policy.md
+# §1.1 and docs/storage_policy.md §2.
+# =============================================================================
+
+# ---- Workspace runtime/output directories (per docs) -------------------------
+# Per docs/runtime_policy.md §1.1: logs/, datasets/, outputs/ are gitignored.
+# Per docs/storage_policy.md §2:    cache/ is gitignored (13th canonical dir).
+logs/
+datasets/
+outputs/
+cache/
+
+# Keep the 4 directories above tracked-but-empty by adding a .gitkeep
+# inside each one (not done by this .gitignore). If empty-dir tracking
+# becomes important, add a `!logs/.gitkeep` line per directory.
+
+# ---- Python bytecode + virtual envs -----------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# Editable installs and build artifacts
+build/
+dist/
+*.egg
+pip-wheel-metadata/
+
+# ---- IDE / editor cruft ------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ---- Profile-specific runtime artefacts (must never leak in) -----------------
+# Isaac Sim writes here when invoked from this workspace.
+**/.nvidia-omniverse/
+**/omni.replicator_out/
+
+# Backup files
+*~
+*.bak
+*.orig
+
+# ---- NVIDIA Nsight / streaming capture files --------------------------------
+# NvStreamer-*.etli are GPU-trace captures written to the workspace root by the
+# Isaac Sim WebRTC streaming session. Large binary artifacts, never
+# replay-authoritative; must not be committed.
+*.etli
+
+# ---- Local secrets / environment overrides -----------------------------------
+# Generally none expected, but kept conservative.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/

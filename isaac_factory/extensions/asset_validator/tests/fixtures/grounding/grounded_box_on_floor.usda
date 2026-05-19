@@ -1,0 +1,33 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+# Clean scene: 10x10 floor with top at z=0, 1m cube resting on top of it.
+# Candidate AABB bottom z = 0.0; support top z = 0.0  →  gap = 0  →  PASS.
+
+def Xform "World"
+{
+    def Cube "Floor"
+    {
+        double size = 1
+        double3 xformOp:scale = (10, 10, 0.1)
+        double3 xformOp:translate = (0, 0, -0.05)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+
+    def Cube "Box" (
+        customData = {
+            dictionary asset_validator = {
+                token grounded = "true"
+            }
+        }
+    )
+    {
+        double size = 1
+        double3 xformOp:translate = (0, 0, 0.5)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

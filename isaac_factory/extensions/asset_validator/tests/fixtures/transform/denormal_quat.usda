@@ -1,0 +1,19 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+# Quaternion magnitude = 0.5 (well outside [0.999, 1.001]).
+# Expected: TRANSFORM.QUATERNION_DENORMAL (FAIL) on /World/Box.
+
+def Xform "World"
+{
+    def Cube "Box"
+    {
+        double size = 1
+        quatd xformOp:orient = (0.5, 0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:orient"]
+    }
+}

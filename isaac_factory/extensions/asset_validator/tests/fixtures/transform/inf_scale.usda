@@ -1,0 +1,19 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+# Scale has +Inf on x axis.
+# Expected: TRANSFORM.INF_VALUE (FAIL) on /World/Box.
+
+def Xform "World"
+{
+    def Cube "Box"
+    {
+        double size = 1
+        double3 xformOp:scale = (inf, 1, 1)
+        uniform token[] xformOpOrder = ["xformOp:scale"]
+    }
+}

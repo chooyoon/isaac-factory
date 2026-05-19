@@ -1,0 +1,34 @@
+{
+  "asset_uri": "file:///home/cap2/last/isaac_factory/extensions/asset_validator/tests/fixtures/transform/negative_scale.usda",
+  "counts": {
+    "FAIL": 0,
+    "INFO": 0,
+    "WARN": 1
+  },
+  "criteria_digest": "sha256:5b84144da91ed2302e55756522899997999de5ce131fbf01ae8a821a1e446762",
+  "criteria_path": "/home/cap2/last/isaac_factory/extensions/asset_validator/configs/acceptance_default.yaml",
+  "duration_seconds": 0.0,
+  "issues": [
+    {
+      "code": "TRANSFORM.NON_POSITIVE_SCALE",
+      "message": "Op 'xformOp:scale' on '/World/Box': x-scale=-1.0 is negative without `customData['mirror']`.",
+      "metric": {
+        "scale_x": -1.0
+      },
+      "prim_paths": [
+        "/World/Box"
+      ],
+      "severity": "WARN",
+      "threshold": {},
+      "validator": "transform"
+    }
+  ],
+  "schema_version": "1.1.0",
+  "seed": 0,
+  "started_at": "2026-05-18T12:00:00+00:00",
+  "status": "WARN",
+  "validators_run": [
+    "transform"
+  ],
+  "validators_skipped": []
+}

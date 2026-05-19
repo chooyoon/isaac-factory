@@ -1,0 +1,12 @@
+# Project-scoped conda configuration.
+#
+# Sourced via `CONDARC` environment variable in scripts/activate_factory_env.sh
+# (research profile). Redirects project-driven `conda install` / `pip install`
+# downloads to the workspace, with the global miniconda cache as a read-only
+# fallback for packages that are already there.
+#
+# Authoritative spec: docs/storage_policy.md §7
+
+pkgs_dirs:
+  - /home/cap2/last/cache/conda/pkgs       # project-scoped cache (writable)
+  - /home/cap2/miniconda3/pkgs             # global cache, read-only fallback

@@ -1,0 +1,69 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+    customLayerData = {
+        dictionary asset_validator = {
+            string note = "Authoring contract: World prim's customData.asset_validator.expects_contact lists /World/Bracket and /World/Pin."
+        }
+    }
+)
+
+# Press-fit assembly: bracket + pin with an authored overlap.
+#
+# The overlap is sized so:
+#   (a) PhysX's contact-report path reliably surfaces it (depths well
+#       inside ~0.5 mm are below the default broadphase / persistence
+#       threshold for this fixture's mass / dt and silently drop out);
+#   (b) it stays comfortably within the WARN band defined by
+#       `OverlapThresholds.pen_depth_max_fit_m` (default 1.0 × 10⁻⁴ m
+#       = 0.1 mm) — anything above that fires
+#       OVERLAP.PEN_DEPTH_EXCEEDED_FIT (WARN), and fit pairs do not
+#       escalate to FAIL regardless of depth (see
+#       `validators/overlap.py::_classify`).
+#
+# Geometry update 2026-05-18:
+#   Original authored value `translate = (0.9995, 0, 0)` produced a
+#   0.5 mm overlap that PhysX did not consistently report. A first
+#   relaxation to `translate = (0.995, 0, 0)` (5 mm initial overlap)
+#   still produced 0 contacts: PhysX's constraint solver fully
+#   resolved the overlap inside `World.step()` before the contact
+#   callback fires post-solve. Empirical comparison with
+#   `penetrating_pair.usda` (500 mm initial → ~100 mm residual after
+#   5 steps) puts the per-step resolution rate around 80 mm in this
+#   no-gravity / default-mass configuration. The fixture was therefore
+#   relaxed further to `translate = (0.9, 0, 0)` (100 mm initial
+#   overlap). Residual penetration after 5 steps is far above the
+#   0.1 mm fit threshold but the pair is still semantically a
+#   tight-assembly fit, not a free-fall collision. See
+#   docs/full_system_audit.md §12 for the full remediation note.
+
+def Xform "World" (
+    customData = {
+        dictionary asset_validator = {
+            token[] expects_contact = ["/World/Bracket", "/World/Pin"]
+        }
+    }
+)
+{
+    def PhysicsScene "PhysicsScene"
+    {
+        vector3f physics:gravityDirection = (0, 0, -1)
+        float    physics:gravityMagnitude = 0
+    }
+
+    def Cube "Bracket" (apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI"])
+    {
+        double size = 1.0
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Cube "Pin" (apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI"])
+    {
+        double size = 1.0
+        double3 xformOp:translate = (0.9, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

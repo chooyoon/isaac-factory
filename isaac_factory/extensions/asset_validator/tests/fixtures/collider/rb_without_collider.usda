@@ -1,0 +1,26 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+# An Xform with PhysicsRigidBodyAPI but no descendant carries
+# PhysicsCollisionAPI.
+# Expected: COLLIDER.RIGID_BODY_WITHOUT_COLLIDER on /World/EmptyRB.
+
+def Xform "World"
+{
+    def PhysicsScene "PhysicsScene"
+    {
+        vector3f physics:gravityDirection = (0, 0, -1)
+        float    physics:gravityMagnitude = 0
+    }
+
+    def Xform "EmptyRB" (apiSchemas = ["PhysicsRigidBodyAPI"])
+    {
+        # no Cube / Mesh / CollisionAPI anywhere under here
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

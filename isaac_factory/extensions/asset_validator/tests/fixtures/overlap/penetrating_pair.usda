@@ -1,0 +1,35 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+# Two 1m cubes overlapping along X by 0.5m. PhysX should report a contact
+# pair with penetration ~0.5m on the first measurement step.
+# Expected: 1 ContactPair with prim_a=/World/A, prim_b=/World/B, depth ~= 0.5;
+# OverlapValidator emits OVERLAP.PEN_DEPTH_EXCEEDED (FAIL) since 0.5 m >
+# pen_depth_max_m (1 mm default).
+
+def Xform "World"
+{
+    def PhysicsScene "PhysicsScene"
+    {
+        vector3f physics:gravityDirection = (0, 0, -1)
+        float    physics:gravityMagnitude = 0
+    }
+
+    def Cube "A" (apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI"])
+    {
+        double size = 1.0
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Cube "B" (apiSchemas = ["PhysicsCollisionAPI", "PhysicsRigidBodyAPI"])
+    {
+        double size = 1.0
+        double3 xformOp:translate = (0.5, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}
