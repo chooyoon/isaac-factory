@@ -638,14 +638,24 @@ class ExecutionSession:
             "scheduler_decision_fingerprint": decision.fingerprint(),
         })
 
-        # 4. Emit NodeExecutionStarted.
+        # Phase 4B Step 8 / Phase 4 — reset_scope determination.
+        # First node of a job uses FULL (Phase 4A authored initial
+        # conditions); every subsequent node uses
+        # ``self._reset_scope_between_nodes`` (defaults to
+        # ACQUIRED_ONLY per D-CONT-4 selective authoritative persistence).
+        is_first_node = (len(self._completed) + len(self._failed)) == 0
+        node_reset_scope = (
+            ResetScope.FULL if is_first_node
+            else self._reset_scope_between_nodes
+        )
+
+        # 4. Emit NodeExecutionStarted. The reset_scope payload now
+        # reflects the actual scope passed to the executor for THIS
+        # node — load-bearing for replay-identity comparators.
         self._emit(EVENT_NODE_EXECUTION_STARTED, payload={
             "node_id":     node_id,
             "task_ref":    node.task_ref,
-            "reset_scope": ResetScope.FULL.value,   # see note in begin()
-                                                    # — step 6 single-node uses FULL
-                                                    # only at begin; between-node
-                                                    # resets are not exercised here.
+            "reset_scope": node_reset_scope.value,
         })
 
         # 5. Phase 4B Step 8 / Phase 3 — pre_node boundary snapshot
@@ -662,8 +672,15 @@ class ExecutionSession:
         # 6. TaskExecutor.execute(...). Phase 4A's execute() runs
         #    UnifiedValidator internally and returns a fully-validated
         #    TaskResult. ExecutionSession does NOT re-validate.
+        # Phase 4B Step 8 / Phase 4 — reset_scope is computed by the
+        # session and passed through ``execute_kwargs``. A caller that
+        # explicitly set ``reset_scope`` in the session's
+        # ``execute_kwargs`` overrides this (escape hatch for tests);
+        # production callers rely on session-driven scoping.
         task = self._task_resolver(node)
-        result = self._task_executor.execute(task, **dict(self._execute_kwargs))
+        exec_kwargs = dict(self._execute_kwargs)
+        exec_kwargs.setdefault("reset_scope", node_reset_scope)
+        result = self._task_executor.execute(task, **exec_kwargs)
 
         # 7. Node transition update based on result.
         passed = _extract_result_passed(result)

@@ -156,6 +156,22 @@ class PickPlaceTask(TaskDefinition):
     # state are still recorded by the executor for the registry.
     additional_object_ids: tuple[str, ...] = ()
 
+    # Phase 4B Step 8 / Phase 4 — per-TaskDefinition trajectory
+    # selection. Declarative; deterministic lookup only; no runtime
+    # adaptation, no dynamic planning.
+    #
+    # Field classification (D-CONT-7a):
+    #   * authoritative-evidence — enters the per-task fingerprint
+    #     via the executor's trajectory swap. Selecting a different
+    #     ``trajectory_id`` produces a categorically different motion
+    #     and a different TaskResult.
+    #
+    # When ``None`` (Phase 4A default), the executor uses
+    # ``cell_cfg.robot.trajectory`` unchanged. When set, the executor
+    # looks the id up in its ``trajectory_sets`` constructor map and
+    # returns EXECUTOR_ERROR on miss (no silent fallback).
+    trajectory_id: str | None = None
+
 
 # ────────────────────────── result ──────────────────────────
 

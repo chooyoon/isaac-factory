@@ -515,20 +515,29 @@ class TestMutationAuthorityMatrix:
     the caller retained."""
 
     def test_executor_never_receives_orchestration_state(self):
+        # Phase 4B Step 8 / Phase 4 — session now passes ``reset_scope``
+        # to execute() as part of its D-CONT-4 reset-authority discipline.
+        # ``reset_scope`` is a config-level enum value (ResetScope.FULL
+        # for the first node), NOT a reference to orchestration state.
+        # The mutation-authority property is unchanged.
+        from cell_authoring.orchestration import ResetScope
         s, _, ex = _build_session()
         s.begin()
         s.step()
         s.complete()
-        # Inspect each call's args. The "execute" call carries (task, kwargs).
         for call in ex.call_log:
             if call[0] == "execute":
                 _, task, kwargs = call
-                # The task is whatever the task_resolver returned (default:
-                # the TaskNode itself). It must NOT be the ExecutionSession,
-                # any frozen-set, or any internal runtime mapping.
+                # Task is the TaskNode (default task_resolver). It must
+                # NOT be the ExecutionSession or an internal orchestration
+                # collection.
                 assert not isinstance(task, ExecutionSession)
-                # kwargs is the user-provided execute_kwargs (empty here).
-                assert kwargs == {}
+                # The only kwarg the session injects is reset_scope.
+                # It carries no reference to orchestration state.
+                assert set(kwargs.keys()) == {"reset_scope"}
+                assert isinstance(kwargs["reset_scope"], ResetScope)
+                # First node of a fresh session → FULL reset scope.
+                assert kwargs["reset_scope"] == ResetScope.FULL
 
     def test_session_does_not_mutate_graph(self):
         graph = _single_node_graph()

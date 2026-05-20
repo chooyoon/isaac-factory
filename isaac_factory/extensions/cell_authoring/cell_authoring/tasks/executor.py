@@ -152,11 +152,22 @@ class TaskExecutor:
                  world,
                  stage,
                  cell_cfg: CellConfig,
-                 registry: CellStateRegistry | None = None) -> None:
+                 registry: CellStateRegistry | None = None,
+                 trajectory_sets: dict[str, list] | None = None) -> None:
         self.world          = world
         self.stage          = stage
         self.cell_cfg       = cell_cfg
         self.registry       = registry or CellStateRegistry()
+
+        # Phase 4B Step 8 / Phase 4 — per-TaskDefinition trajectory
+        # selection. Optional mapping ``trajectory_id`` → trajectory
+        # (list of TrajectoryWaypoint-like). When ``None`` (Phase 4A
+        # default), tasks with no ``trajectory_id`` use the cell
+        # config's single trajectory; tasks with a ``trajectory_id``
+        # set raise EXECUTOR_ERROR because there is no mapping to
+        # look up against. Deterministic lookup only; no planning, no
+        # runtime adaptation.
+        self._trajectory_sets = trajectory_sets
 
         # Lazy-created PhysX-backed handles. Constructed once and reused
         # across tasks executed by this instance (the Phase 3P
@@ -302,45 +313,73 @@ class TaskExecutor:
         self.registry.metrics.clear()
 
     def _reset_acquired_only(self) -> None:
-        """Phase 4B step-6 — reset arm + belt + contact-source drain
-        only. Objects stay where they are.
+        """Phase 4B Step 8 / Phase 4 — selective authoritative
+        persistence only.
 
-        Designed for between-node resets in multi-task ExecutionSession
-        runs: a peg placed on FixtureA by node N1 must remain on
-        FixtureA when node N2 starts. ``world.reset()`` is **NOT**
-        called here — Isaac Sim's world.reset() would restore default
-        poses for every prim. We only re-issue arm joint targets and
-        drain transient contact state.
+        Cites D-CONT-3 (boundary PhysX-quiescence) and D-CONT-4
+        (selective authoritative persistence semantics).
 
-        Step 6 ships this method but exercises it only at the
-        API/protocol level (single-node execution does not hit the
-        between-node path). Simulation-level verification is a
-        deferred integration-test concern (cell_authoring/orchestration
-        cannot run Isaac Sim from unit tests).
+        Preserved (authoritative continuity, D-CONT-1 + D-CONT-4):
+          * canonical object pose — the PhysX scene is left untouched;
+            objects placed by a prior task remain at their post-
+            placement pose. No ``set_world_poses`` is called.
+          * fixture occupancy in the registry — untouched here;
+            session Phase-G is the sole occupancy authority (D-CONT-5).
+          * articulation joint positions in PhysX — left as the prior
+            task's last drive target settled them. No teleport.
+
+        Drained / zeroed (non-stepping operations on incidental state):
+          * contact-source query queue — drains stale contact events
+            from the C++ buffer so the next cycle starts with a clean
+            event stream. Non-stepping.
+          * ``registry.contact`` — in-memory; replaced with a fresh
+            ``ContactState()`` instance. D-CONT-2 forbidden contact
+            flags are zeroed at boundary entry (D-CONT-4).
+          * ``registry.metrics`` — in-memory diagnostic scratchpad.
+
+        Restored to authored value:
+          * belt surface velocity — config-level USD attribute write,
+            non-stepping. Without restoration the belt would remain
+            in N1's "halted" state and contaminate N2's runtime.
+
+        Forbidden (per D-CONT-3 and D-CONT-4):
+          * ``world.step(...)``, ``world.play()``+step, ``kit.update()``
+            — would advance the simulator, violating boundary
+            quiescence (D-CONT-3).
+          * ``self._art.initialize()`` — re-init can perturb
+            articulation stabilization state. Originally added "to be
+            safe"; Phase 4 removes it (Phase 1 hazard H4).
+          * ``set_joint_positions`` — direct joint teleport (D-CONT-4
+            forbidden list).
+          * ``set_world_poses`` — direct object teleport.
+          * ``set_linear_velocities`` — direct velocity write.
+          * ``set_joint_position_targets`` — redundant; the next
+            cycle's first physics tick writes fresh drive targets,
+            and any "arm-home" target here would be overwritten on
+            tick 0. Removing it reduces the surface where
+            non-deterministic re-init effects could enter.
+
+        Residual incidental state (joint velocities, contact manifold
+        warm-starts, articulation sleep/wake flags) IS left in PhysX
+        — this state is D-CONT-2 forbidden as a continuity input but
+        cannot be "wiped" without a teleport. Orchestration treats it
+        as forbidden via the contract; the next cycle's PD control
+        dissipates residual velocity within the first few ticks.
         """
         from pxr import Gf
         if not self._initialised:
             self.prepare()
 
-        # Re-initialise arm handles (idempotent in Phase 4A semantics).
-        try:
-            self._art.initialize()
-        except Exception:
-            pass
-        # Belt back to authored speed if we have a record of it.
+        # Belt back to authored speed — config-level USD attribute
+        # write, non-stepping (D-CONT-3 compliant). Without this the
+        # belt remains in the halted state left by N1's belt_halt_step
+        # command and contaminates N2's runtime.
         if self._belt_attr and self._belt_attr.IsValid() and self._belt_original is not None:
             self._belt_attr.Set(Gf.Vec3f(*[float(c) for c in self._belt_original]))
 
-        # Arm → home (no peg teleport).
-        home = dict(self.cell_cfg.robot.home_pose_rad)
-        full = self._art.get_joint_positions()
-        for i, name in enumerate(_UR10E_JOINT_NAMES):
-            full[0][self._joint_indices[i]] = float(home[name])
-        self._art.set_joint_positions(full)
-        self._art.set_joint_position_targets(full)
-
-        # Drain transient contact state so prior cycle's events don't
-        # leak into the next node.
+        # Drain transient contact state. ``query_contacts`` flushes the
+        # C++ event buffer (non-stepping); registry mutations are
+        # in-memory. None of these advances the simulator.
         self._contact_source.query_contacts()
         self.registry.contact = ContactState()
         self.registry.metrics.clear()
@@ -351,11 +390,29 @@ class TaskExecutor:
                 *,
                 profile: TrajectoryProfile = TrajectoryProfile.NOMINAL,
                 seed: int = 20260519,
+                reset_scope: ResetScope | None = None,
                 step_observer: Callable[[int, dict], None] | None = None,
                 render: bool = False) -> TaskResult:
         """Run one task end-to-end. Returns a fully-populated TaskResult.
 
         prepare → reset → run-cycle → validate → return result.
+
+        ``reset_scope`` (optional): scope of the pre-cycle reset.
+        Phase 4B Step 8 / Phase 4 addition.
+
+          * ``None`` (default) — Phase 4A behaviour: caller did not
+            specify a scope; the executor performs a ``FULL`` reset.
+            Preserves the 32/32 Phase 4A regression surface byte-for-
+            byte. Phase 4A tests do not set ``reset_scope``.
+          * ``ResetScope.FULL`` — explicit FULL reset. Identical to
+            ``None`` in current behaviour; the explicit form is what
+            :class:`cell_authoring.orchestration.session.ExecutionSession`
+            passes for the first node of a job.
+          * ``ResetScope.ACQUIRED_ONLY`` — selective authoritative
+            persistence (D-CONT-4). Used by ExecutionSession between
+            nodes so prior placements survive. The reset performs only
+            non-stepping operations; no teleports; no implicit world
+            stepping.
 
         ``step_observer`` (optional): per-physics-step callback invoked
         with ``(step_index, observer_state_dict)``. observer_state_dict
@@ -388,10 +445,44 @@ class TaskExecutor:
             )
 
         self.prepare()
-        self.reset()
+        # Phase 4B Step 8 / Phase 4 — reset_scope plumbing.
+        # When the caller does not specify a scope, fall back to
+        # ``ResetScope.FULL`` (Phase 4A default; preserves 32/32
+        # regression byte-for-byte). When the caller specifies
+        # ``ACQUIRED_ONLY``, the session is asserting that retained
+        # state from the prior tick must persist (D-CONT-4).
+        if reset_scope is None:
+            self.reset()  # Phase 4A default — FULL via reset()'s own default
+        else:
+            self.reset(scope=reset_scope)
 
         # Apply profile (NOMINAL is a pass-through).
         profiled_robot_cfg = apply_profile_to_trajectory(self.cell_cfg.robot, profile)
+
+        # Phase 4B Step 8 / Phase 4 — per-TaskDefinition trajectory
+        # selection (minimal implementation). When ``task.trajectory_id``
+        # is set and a matching entry exists in ``self._trajectory_sets``,
+        # swap the trajectory on ``profiled_robot_cfg``. Phase 4A's
+        # default path (no ``trajectory_id`` on the task) uses
+        # ``cell_cfg.robot.trajectory`` unchanged.
+        trajectory_id = getattr(task, "trajectory_id", None)
+        if trajectory_id is not None:
+            if self._trajectory_sets is None or trajectory_id not in self._trajectory_sets:
+                return TaskResult(
+                    task_id=task.task_id, profile_id=profile.value,
+                    outcome=TaskOutcome.EXECUTOR_ERROR,
+                    outcome_detail=(
+                        f"unknown trajectory_id {trajectory_id!r}; "
+                        f"executor was constructed with "
+                        f"{sorted((self._trajectory_sets or {}).keys())!r}"
+                    ),
+                    seed=seed,
+                )
+            from dataclasses import replace as _replace
+            profiled_robot_cfg = _replace(
+                profiled_robot_cfg,
+                trajectory=list(self._trajectory_sets[trajectory_id]),
+            )
 
         return self._run_cycle(task, profiled_robot_cfg, profile, seed,
                                 step_observer=step_observer, render=render)
