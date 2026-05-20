@@ -392,7 +392,8 @@ class TaskExecutor:
                 seed: int = 20260519,
                 reset_scope: ResetScope | None = None,
                 step_observer: Callable[[int, dict], None] | None = None,
-                render: bool = False) -> TaskResult:
+                render: bool = False,
+                should_interrupt: Callable[[int], bool] | None = None) -> TaskResult:
         """Run one task end-to-end. Returns a fully-populated TaskResult.
 
         prepare → reset → run-cycle → validate → return result.
@@ -429,6 +430,24 @@ class TaskExecutor:
         validation/regression runs stay fast and head-less-equivalent.
         Rendering does NOT alter PhysX state — the determinism property
         is preserved either way.
+
+        ``should_interrupt`` (optional): Phase 4B Step 10 Direction A
+        interruption predicate (D-EXEC-13). When provided, the executor
+        consults this callable at deterministic segment boundaries
+        internal to the trajectory. Signature: ``(segment_tick: int) ->
+        bool`` where ``segment_tick`` is the count of segment boundaries
+        completed so far (0 before any segment ran; N after N segments).
+        Returning True at a boundary causes ``execute()`` to terminate
+        immediately with ``outcome=TaskOutcome.EXECUTION_INTERRUPTED``
+        and ``ticks_consumed`` equal to the cumulative ``world.step()``
+        count at that boundary; the session classifies the orchestration-
+        level cause per D-FAULT-3b.
+
+        The predicate is consumed as an opaque, pure callable: the
+        executor MUST NOT introspect, substitute, or augment it
+        (D-EXEC-13c/d). Defaults to None (no interruption surface; Phase
+        4A baseline behaviour). When None, the trajectory runs to
+        completion exactly as before.
         """
         if not isinstance(task, PickPlaceTask):
             return TaskResult(
@@ -485,7 +504,62 @@ class TaskExecutor:
             )
 
         return self._run_cycle(task, profiled_robot_cfg, profile, seed,
-                                step_observer=step_observer, render=render)
+                                step_observer=step_observer, render=render,
+                                should_interrupt=should_interrupt)
+
+    # ─────────── Phase 4B Step 10 Direction A / Phase 6 — boundary derivation ───────────
+    def compute_segment_boundary_ticks(
+        self,
+        task: TaskDefinition,
+        *,
+        profile: TrajectoryProfile = TrajectoryProfile.NOMINAL,
+    ) -> tuple[int, ...]:
+        """Return the cumulative ``world.step()`` count at each
+        deterministic segment boundary terminus for the given task.
+
+        Pure function over ``(self.cell_cfg.robot, task.trajectory_id,
+        self._trajectory_sets, profile)``. No PhysX state read, no
+        wall-clock, no observational projection — D-EXEC-13 whitelist.
+        Mirrors the boundary-derivation logic in :meth:`_run_cycle`
+        bytewise, so a predicate built from this tuple aligns exactly
+        with the boundaries the executor will consult.
+
+        Returns a tuple ``(t1, t2, ..., tN)`` where ``tK`` is the
+        ``world.step()`` count at the terminus of the K-th
+        non-zero-duration waypoint in the task's effective trajectory
+        (boundary index 1..N; boundary 0 is implicitly tick 0). The
+        tuple is monotone non-decreasing by construction.
+
+        Used by :class:`ExecutionSession` to build a Direction A
+        interruption predicate that knows the cumulative tick count at
+        each boundary, enabling D-FAULT-3b row-1 envelope eligibility
+        (`requested_at_tick <= base_tick + ticks_consumed`) to fire
+        mid-trajectory rather than only at execute-entry.
+        """
+        profiled_robot_cfg = apply_profile_to_trajectory(self.cell_cfg.robot, profile)
+        trajectory_id = getattr(task, "trajectory_id", None)
+        if trajectory_id is not None:
+            if self._trajectory_sets is None or trajectory_id not in self._trajectory_sets:
+                # Unknown trajectory id — return empty tuple. The session
+                # will build a predicate that never triggers; the executor
+                # will surface an EXECUTOR_ERROR at execute().
+                return ()
+            from dataclasses import replace as _replace
+            profiled_robot_cfg = _replace(
+                profiled_robot_cfg,
+                trajectory=list(self._trajectory_sets[trajectory_id]),
+            )
+        waypoints = list(profiled_robot_cfg.trajectory)
+        cumulative: list[float] = []
+        t_c = 0.0
+        for wp in waypoints:
+            t_c += wp.duration_s
+            cumulative.append(t_c)
+        return tuple(
+            int(round(cumulative[i] / PHYSICS_DT_S))
+            for i in range(len(waypoints))
+            if waypoints[i].duration_s > 0
+        )
 
     # ─────────── validate (per-result classifier) ───────────
     @staticmethod
@@ -585,7 +659,8 @@ class TaskExecutor:
                    profile: TrajectoryProfile, seed: int,
                    *,
                    step_observer: Callable[[int, dict], None] | None = None,
-                   render: bool = False) -> TaskResult:
+                   render: bool = False,
+                   should_interrupt: Callable[[int], bool] | None = None) -> TaskResult:
         import numpy as np
         from pxr import Gf, UsdGeom, Usd
         _DEG2RAD = math.pi / 180.0
@@ -613,6 +688,92 @@ class TaskExecutor:
         release_end_step   = int(round(release_end_s   / PHYSICS_DT_S))
         release_start_step = place_end_step
         n_steps            = int(round(total_s         / PHYSICS_DT_S)) + 60
+
+        # Phase 4B Step 10 Direction A — segment-boundary table
+        # (D-EXEC-13). Ordered, monotone non-decreasing cumulative
+        # ``world.step()`` count at each boundary terminus, paired with
+        # the boundary's author-declared name. The executor consults
+        # ``should_interrupt`` AT these boundaries only — never per-step,
+        # never mid-segment (D-EXEC-13 condition 4, D-FAULT-15 #21).
+        #
+        # ``segment_tick`` semantics:
+        #     0 = before any segment has run (pre-execute)
+        #     k = boundary AFTER the k-th named segment has completed
+        #
+        # ``ticks_consumed`` at boundary k = the cumulative count of
+        # ``world.step()`` invocations performed up to that boundary
+        # (D-FAULT-12c). Equals the step_i at which the segment
+        # nominally ENDS (= the first step of the NEXT segment, since
+        # the loop's step_i ranges 0..n_steps-1 and one world.step()
+        # runs per iteration → step_i K's iteration corresponds to the
+        # (K+1)-th world.step() call). Boundary 0 is consulted before
+        # the loop; boundary k for k >= 1 is consulted at the START of
+        # iteration ``segment_boundary_steps[k]`` (when step_i first
+        # equals the boundary terminus), AFTER the previous iteration's
+        # ``world.step()`` has settled and registry updates have
+        # committed — D-EXEC-13 conditions 1-5.
+        #
+        # Phase 4B Step 10 Direction A / Phase 5 — trajectory-derived
+        # boundary table. The boundary set is derived from the
+        # **trajectory's authored waypoint sequence** (fixed in cell
+        # YAML, replay-stable, no PhysX-timing, no interpolation-
+        # sensitivity, no adaptive slicing — D-EXEC-13c whitelist).
+        # Every named waypoint with non-zero duration contributes one
+        # boundary. The Phase 4 hard-coded 5-tuple is superseded by
+        # this derivation, which exposes ALL authored segment terminuses
+        # (grasp_clearance, grasp, grasp_drop, grasp_close, lift,
+        # approach_place, place, release, retract_above_place,
+        # return_home in the Cell-01 trajectory) — enabling richer
+        # deterministic interruption coverage for Step 9 scenarios
+        # C (operator-abort after acquire), D (cascade-skipped
+        # downstream graph), F (contradiction-preserving interruption).
+        # Zero-duration waypoints (e.g. "home" at t=0.0) are excluded:
+        # they would collapse to step 0 alongside boundary 0.
+        _segment_boundaries: tuple[tuple[str, int], ...] = tuple(
+            (waypoints[i].name, int(round(cumulative[i] / PHYSICS_DT_S)))
+            for i in range(len(waypoints))
+            if waypoints[i].duration_s > 0
+        )
+        # Map step_index → (boundary_index, segment_name_just_completed)
+        # for O(1) boundary detection inside the hot loop. Duplicates
+        # (two segments ending on the same step — possible if a future
+        # trajectory authors back-to-back zero-duration plus tiny-
+        # duration waypoints) collapse to the last entry; the boundary
+        # ordering preserves authored chronology by construction.
+        _step_to_boundary: dict[int, tuple[int, str]] = {}
+        for _idx, (_name, _step) in enumerate(_segment_boundaries, start=1):
+            _step_to_boundary[int(_step)] = (_idx, _name)
+
+        # Boundary 0 — pre-execute predicate consultation (D-EXEC-13;
+        # boundary-0 semantics per §C.4 of Direction A analysis). If
+        # the predicate is already True at boundary 0, the executor
+        # MUST return immediately with ``ticks_consumed=0`` and NO
+        # ``world.step()`` calls. The session classifies the outcome
+        # per D-FAULT-3b.
+        if should_interrupt is not None and bool(should_interrupt(0)):
+            self.registry.start_task(task.task_id, started_at_step=0)
+            self.registry.set_task_phase("validating")
+            _interrupted_seg_name = (
+                _segment_boundaries[0][0] if _segment_boundaries else "pre_execute"
+            )
+            result_interrupted = TaskResult(
+                task_id=task.task_id,
+                profile_id=profile.value,
+                outcome=TaskOutcome.EXECUTION_INTERRUPTED,
+                outcome_detail=(
+                    f"interrupted at boundary 0 (pre-execute); "
+                    f"next segment was {_interrupted_seg_name!r}"
+                ),
+                ticks_consumed=0,
+                interrupted_at_segment_index=0,
+                interrupted_at_segment_name=_interrupted_seg_name,
+                seed=seed,
+                wall_clock_s=round(time.time() - t_start, 3),
+                perturbation={},
+                registry_snapshot=self.registry.snapshot(),
+            )
+            self.registry.set_task_phase("done")
+            return result_interrupted
 
         self.registry.start_task(task.task_id, started_at_step=0)
 
@@ -675,8 +836,31 @@ class TaskExecutor:
         prev_jvel  = None
         prev_ee_v  = None
 
+        # Phase 4B Step 10 Direction A — track whether the executor
+        # short-circuited via predicate; on early return we assemble a
+        # minimal EXECUTION_INTERRUPTED TaskResult and skip the validator
+        # (D-FAULT-1b — executor reports neutrally, session classifies).
+        _interrupted_at: tuple[int, str] | None = None
+
         for step_i in range(n_steps):
             self.registry.task.step = step_i
+
+            # Phase 4B Step 10 Direction A — in-loop predicate consultation
+            # at deterministic segment boundaries (D-EXEC-13 condition 4).
+            # The boundary state "after K ``world.step()`` calls completed"
+            # holds at the START of iteration ``step_i`` (no commands
+            # issued yet, no in-flight PhysX command — D-EXEC-13 conditions
+            # 1, 3). The registry reflects the previous iteration's
+            # settled probes (condition 2). The predicate is consulted
+            # ONLY at named-segment terminuses listed in
+            # ``_step_to_boundary``; it is NEVER consulted mid-segment
+            # (D-FAULT-15 #21). First True return terminates execute
+            # (D-EXEC-13d; no speculation).
+            if should_interrupt is not None and step_i in _step_to_boundary:
+                _b_idx, _b_name = _step_to_boundary[step_i]
+                if bool(should_interrupt(_b_idx)):
+                    _interrupted_at = (_b_idx, _b_name)
+                    break
 
             # Joint-target write (mirrors the validated test pattern).
             full_target = np.array(self._art.get_joint_positions(), dtype=np.float32).copy()
@@ -869,6 +1053,42 @@ class TaskExecutor:
         if pad_pen_min_in_transport >= 1e9:
             pad_pen_min_in_transport = 0.0
 
+        # Phase 4B Step 10 Direction A — early-return for an interrupted
+        # cycle. The executor reports the mechanical event
+        # (EXECUTION_INTERRUPTED, D-FAULT-1b) plus the authoritative
+        # ``ticks_consumed`` count (D-FAULT-12c) plus the observational
+        # forensic fields (D-EXEC-13b). It does NOT classify the
+        # orchestration-level cause; the session does, per D-FAULT-3b.
+        # The validator is NOT re-run: EXECUTION_INTERRUPTED is the
+        # terminal outcome for this execute() invocation.
+        if _interrupted_at is not None:
+            _b_idx, _b_name = _interrupted_at
+            self.registry.set_task_phase("validating")
+            result_interrupted = TaskResult(
+                task_id=task.task_id,
+                profile_id=profile.value,
+                outcome=TaskOutcome.EXECUTION_INTERRUPTED,
+                outcome_detail=(
+                    f"interrupted at boundary {_b_idx} "
+                    f"(end of segment {_b_name!r}); "
+                    f"ticks_consumed={int(self.registry.task.step)}"
+                ),
+                peg_xyz_initial=peg_xyz_initial,
+                # NOTE: peg_xyz_final intentionally omitted — the
+                # trajectory did not run to completion, so there is no
+                # "final" pose semantically. Last-tick canonical pose
+                # remains in the registry per D-CONT-1.
+                ticks_consumed=int(self.registry.task.step),
+                interrupted_at_segment_index=_b_idx,
+                interrupted_at_segment_name=_b_name,
+                seed=seed,
+                wall_clock_s=round(time.time() - t_start, 3),
+                perturbation={},
+                registry_snapshot=self.registry.snapshot(),
+            )
+            self.registry.set_task_phase("done")
+            return result_interrupted
+
         # Phase 4B Step 8 / Phase 2 — placement evidence emission.
         # The executor no longer mutates fixture occupancy (D-CONT-5);
         # it emits the objective placement offset and lets
@@ -914,6 +1134,12 @@ class TaskExecutor:
             release_end_step=release_end_step,
             n_steps=n_steps,
             seed=seed,
+            # Phase 4B Step 10 Direction A — happy-path ticks_consumed
+            # (D-FAULT-12c): cumulative ``world.step()`` count when the
+            # trajectory ran to completion equals ``n_steps``. Integer,
+            # wall-clock-independent, authoritative-evidence; enters the
+            # per-task fingerprint via session._result_fingerprint.
+            ticks_consumed=n_steps,
             wall_clock_s=round(time.time() - t_start, 3),
             perturbation={},
             registry_snapshot=self.registry.snapshot(),

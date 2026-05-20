@@ -85,6 +85,38 @@ _LIVESTREAM_CONFIG = {
 _HEADLESS_CONFIG = {"headless": True}
 
 
+def _auto_detect_public_endpoint() -> str | None:
+    """Return the first IPv4 from ``hostname -I`` that is NOT loopback
+    (127/8), docker0's default subnet (172.17/16), or CGNAT/Tailscale
+    (100.64/10). Falls back to None if no suitable IP found — operator
+    must pass ``--public-endpoint`` explicitly in that case.
+
+    Auto-detection is a convenience, not a contract. The selected IP
+    is logged so the operator can override if it picks the wrong
+    interface.
+    """
+    import ipaddress
+    import subprocess
+    try:
+        out = subprocess.check_output(["hostname", "-I"], text=True).strip()
+    except Exception:
+        return None
+    loopback = ipaddress.ip_network("127.0.0.0/8")
+    docker_default = ipaddress.ip_network("172.17.0.0/16")
+    cgnat = ipaddress.ip_network("100.64.0.0/10")  # Tailscale et al.
+    for tok in out.split():
+        try:
+            ip = ipaddress.ip_address(tok)
+        except ValueError:
+            continue
+        if not isinstance(ip, ipaddress.IPv4Address):
+            continue
+        if ip in loopback or ip in docker_default or ip in cgnat:
+            continue
+        return str(ip)
+    return None
+
+
 def main() -> int:
     if LOG_FILE.exists():
         LOG_FILE.unlink()
@@ -97,7 +129,38 @@ def main() -> int:
                     help="Enable WebRTC livestream + HUD for visual "
                          "boundary continuity verification. When set, "
                          "also enables rendered physics ticks.")
+    ap.add_argument("--public-endpoint", type=str, default=None,
+                    help="LAN/remote IP to advertise to the Omniverse "
+                         "Streaming Client (sets "
+                         "/app/livestream/publicEndpointAddress). When "
+                         "set, the livestream extension DISABLES ICE "
+                         "and routes media directly to this endpoint "
+                         "(streamsdk 7.3.2+ behaviour). Required when "
+                         "the WebRTC client lives on a different host "
+                         "than the simulator. Default: auto-detected "
+                         "non-loopback, non-docker, non-tailscale IPv4.")
+    ap.add_argument("--record-mp4", action="store_true",
+                    help="Record an MP4 video of the full session via "
+                         "offscreen PNG sequence + ffmpeg encode. Capture "
+                         "is observational (uses the same step_observer + "
+                         "render=True path as --stream); orchestration / "
+                         "replay-identity / D-CONT semantics are not "
+                         "perturbed. Output: "
+                         "logs/phase_5_recording/<utc>/all_cycles.mp4 + "
+                         "per-cycle MP4s + per-cycle PNG sequences.")
+    ap.add_argument("--record-fps", type=int, default=60,
+                    help="MP4 playback framerate. Each physics tick "
+                         "(1/60s) emits one PNG; ffmpeg encodes at this "
+                         "playback rate. Default 60 → real-time playback. "
+                         "30 → 2x speed. Lower for compact files; higher "
+                         "for slow-motion.")
     args = ap.parse_args()
+
+    # Auto-detect public endpoint if --stream is set and the operator
+    # didn't pass an explicit address. Picks the first IPv4 from
+    # ``hostname -I`` that is NOT loopback, NOT docker0, NOT tailscale.
+    if args.stream and args.public_endpoint is None:
+        args.public_endpoint = _auto_detect_public_endpoint()
 
     _log(f"[5-2node] boot — cycles={args.cycles}, stream={args.stream}")
     _log(f"[5-2node] cell stage = {CELL_STAGE}")
@@ -107,13 +170,115 @@ def main() -> int:
     kit = SimulationApp(launch_config=cfg)
 
     if args.stream:
+        # CORRECTED 2026-05-20 (Step 8 visibility diagnosis):
+        # The original ``omni.services.livestream.nvcf`` is the NGC
+        # Cloud Functions streamer — designed for NGC deployments,
+        # NOT for local Omniverse Streaming Client connections. The
+        # local-streamable extension is ``omni.kit.livestream.webrtc``.
+        #
+        # PUBLIC ENDPOINT (2nd correction, 2026-05-20): without
+        # ``/app/livestream/publicEndpointAddress`` the server gathers
+        # ICE candidates from local interfaces with no guarantee of
+        # advertising a remote-reachable IP — symptom: client connects
+        # (signaling works) but media frames never arrive (black frame).
+        # Setting publicEndpointAddress DISABLES ICE entirely and
+        # routes media directly to the named host (streamsdk 7.3.2+,
+        # see omni.kit.streamsdk.plugins/docs/CHANGELOG.md). MUST be
+        # set BEFORE enable_extension(omni.kit.livestream.webrtc).
         try:
             from isaacsim.core.utils.extensions import enable_extension
             kit.set_setting("/app/window/drawMouse", True)
-            enable_extension("omni.services.livestream.nvcf")
-            _log("[5-2node] enabled omni.services.livestream.nvcf")
+            if args.public_endpoint:
+                kit.set_setting("/app/livestream/publicEndpointAddress",
+                                args.public_endpoint)
+                _log(f"[5-2node] /app/livestream/publicEndpointAddress = "
+                     f"{args.public_endpoint!r}  (ICE disabled; media "
+                     f"routed direct to this host)")
+            else:
+                _log("[5-2node] WARN: no --public-endpoint set and no "
+                     "auto-detected IPv4 — remote clients may receive "
+                     "signaling only (black frame). Pass "
+                     "--public-endpoint <ip> for remote viewers.")
+            # viewportEnabled attempts — see diag_stream_minimal.py for
+            # rationale (capture viewport texture instead of full app
+            # window, which is empty in headless mode).
+            for key in (
+                "/app/livestream/viewportEnabled",
+                "/app/livestream/viewport_enabled",
+                "/exts/omni.kit.livestream.webrtc/viewportEnabled",
+                "/exts/omni.kit.streamsdk.plugins/viewportEnabled",
+                "/app/livestream/streamFromViewport",
+                "/exts/omni.kit.livestream.core/viewportEnabled",
+            ):
+                kit.set_setting(key, True)
+            kit.set_setting("/app/livestream/webrtc/logQosStatus", True)
+            enabled = enable_extension("omni.kit.livestream.webrtc")
+            _log(f"[5-2node] enable_extension(omni.kit.livestream.webrtc) → {enabled!r}")
+
+            # ─── transport diag: register QoS callback ───
+            try:
+                import omni.kit.livestream.bind as _ls_bind
+                _ls_iface = _ls_bind.acquire_livestream_interface()
+                _qos_state = {"count": 0}
+                def _qos_cb(qos_status):
+                    _qos_state["count"] += 1
+                    _log(
+                        f"[5-2node] QoS#{_qos_state['count']:>3}  "
+                        f"encode={int(qos_status.encode_width)}x"
+                        f"{int(qos_status.encode_height)}  "
+                        f"fps target={float(qos_status.target_streaming_fps):.1f} "
+                        f"actual={float(qos_status.recommended_mode.actual_streaming_fps):.1f}  "
+                        f"bitrate={float(qos_status.qos_bitrate):.0f} bps  "
+                        f"rtd={float(qos_status.average_rtd_ms):.0f}ms"
+                    )
+                _cb_id = _ls_iface.register_qos_status_callback(_qos_cb)
+                _log(f"[5-2node] registered QoS callback id={_cb_id}")
+            except Exception as e:
+                _log(f"[5-2node] WARN: QoS callback registration failed: {e}")
+            # ─── operator pre-cycle verification dump ───
+            import carb
+            settings = carb.settings.get_settings()
+            actual_endpoint = settings.get("/app/livestream/publicEndpointAddress")
+            actual_port     = settings.get("/app/livestream/port")
+            actual_proto    = settings.get("/app/livestream/proto")
+            actual_enabled  = settings.get("/app/livestream/enabled")
+            actual_w        = settings.get("/app/renderer/resolution/width")
+            actual_h        = settings.get("/app/renderer/resolution/height")
+            ws_url = (f"ws://{actual_endpoint}:{actual_port}"
+                      if actual_endpoint and actual_port else "<unset>")
+            _log("[5-2node] ─── stream pre-cycle verification ───")
+            _log(f"[5-2node]   /app/livestream/publicEndpointAddress = "
+                 f"{actual_endpoint!r}")
+            _log(f"[5-2node]   /app/livestream/port                  = "
+                 f"{actual_port!r}")
+            _log(f"[5-2node]   /app/livestream/proto                 = "
+                 f"{actual_proto!r}")
+            _log(f"[5-2node]   /app/livestream/enabled               = "
+                 f"{actual_enabled!r}")
+            _log(f"[5-2node]   websocket endpoint                    = "
+                 f"{ws_url}")
+            _log(f"[5-2node]   render resolution                     = "
+                 f"{actual_w}x{actual_h}")
+            _log(f"[5-2node]   renderer                              = "
+                 f"{_LIVESTREAM_CONFIG['renderer']}")
+            # Extension state.
+            try:
+                import omni.kit.app as _kit_app
+                _ext_mgr = _kit_app.get_app().get_extension_manager()
+                _ls_exts = [
+                    (e["name"], bool(e.get("enabled", False)),
+                     e.get("version", "?"))
+                    for e in _ext_mgr.get_extensions()
+                    if "livestream" in e["name"].lower()
+                ]
+                for name, ext_enabled, ver in sorted(_ls_exts):
+                    state = "ENABLED" if ext_enabled else "loaded "
+                    _log(f"[5-2node]   extension  {state}  {name:42s} v{ver}")
+            except Exception as e:
+                _log(f"[5-2node]   extension probe failed: {e}")
+            _log("[5-2node] ─── pre-cycle verification end ───")
         except Exception as e:
-            _log(f"[5-2node] WARN: could not enable livestream ext: {e}")
+            _log(f"[5-2node] WARN: could not enable webrtc livestream ext: {e}")
 
     sigint_received = {"flag": False}
 
@@ -239,6 +404,35 @@ def _run(kit, args, sigint_received) -> int:
         trajectory_sets=trajectory_sets,
     )
 
+    # ─────────── MP4 recording setup (observational, optional) ───────────
+    record_state: dict = {"enabled": False}
+    if args.record_mp4:
+        # Output layout:
+        #   logs/phase_5_recording/<UTC ISO>/raw/cycle_NNNN/rgb_*.png
+        #   logs/phase_5_recording/<UTC ISO>/cycle_NNNN.mp4
+        #   logs/phase_5_recording/<UTC ISO>/all_cycles.mp4
+        from datetime import datetime, timezone
+        utc_tag = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        rec_root = WORKSPACE / "logs" / "phase_5_recording" / utc_tag
+        rec_root.mkdir(parents=True, exist_ok=True)
+        record_state["root"]     = rec_root
+        record_state["fps"]      = int(args.record_fps)
+        record_state["per_cycle_writers"] = []
+        record_state["per_cycle_dirs"]    = []
+        record_state["enabled"]  = True
+        _log(f"[5-2node] MP4 recording enabled — output root: {rec_root}")
+        _log(f"[5-2node]   playback fps: {args.record_fps}  "
+             f"(physics tick rate is 60 Hz; encode at this rate)")
+
+        # Import Replicator and verify it loads in this kit experience.
+        try:
+            import omni.replicator.core as rep
+            record_state["rep"] = rep
+            _log(f"[5-2node]   omni.replicator.core imported OK")
+        except Exception as e:
+            _log(f"[5-2node] FAIL: omni.replicator.core unavailable: {e}")
+            return 1
+
     # ─────────────── per-cycle session loop ───────────────
 
     cycle_count   = 0
@@ -260,11 +454,32 @@ def _run(kit, args, sigint_received) -> int:
         # session's Phase-G commits will fill/empty them.
         register_phase_5_fixtures(executor.registry)
 
+        # ─── per-cycle MP4 recording: attach Replicator BasicWriter ───
+        if record_state["enabled"]:
+            rep = record_state["rep"]
+            cycle_raw_dir = record_state["root"] / "raw" / f"cycle_{cycle_count:04d}"
+            cycle_raw_dir.mkdir(parents=True, exist_ok=True)
+            record_state["per_cycle_dirs"].append(cycle_raw_dir)
+            # Create a render product targeting /World/VisCam at 1280x720.
+            rp = rep.create.render_product("/World/VisCam", (1280, 720))
+            writer = rep.WriterRegistry.get("BasicWriter")
+            writer.initialize(output_dir=str(cycle_raw_dir), rgb=True)
+            writer.attach([rp])
+            record_state["per_cycle_writers"].append((writer, rp))
+            _log(f"[5-2node]   recording → {cycle_raw_dir}")
+
+        # CORRECTED 2026-05-20: ``render=True`` is REQUIRED for
+        # WebRTC livestreaming AND for MP4 recording (without it
+        # ``world.step(render=False)`` runs every physics tick and
+        # produces no rendered frames for either path).
+        need_render = args.stream or args.record_mp4
+        execute_kwargs = {"render": True} if need_render else {}
         session = ExecutionSession(
             graph=build_phase_5_graph(),
             task_executor=executor,
             event_bus=bus,
             task_resolver=build_phase_5_task_resolver(),
+            execute_kwargs=execute_kwargs,
         )
 
         t0 = time.time()
@@ -378,12 +593,160 @@ def _run(kit, args, sigint_received) -> int:
             _log(f"[5-2node] FAIL acceptance: FixtureB expected occupied({OBJECT_ID_PEG!r}), got {fb_occ!r}")
             return 2
 
+        # 7. End-of-cycle recording detach (flush PNGs to disk).
+        if record_state["enabled"]:
+            try:
+                writer, rp = record_state["per_cycle_writers"][-1]
+                writer.detach()
+                rp.destroy()
+                # Give the file system a moment for outstanding async writes.
+                time.sleep(0.5)
+                cycle_dir = record_state["per_cycle_dirs"][-1]
+                n_pngs = len(list(cycle_dir.glob("rgb_*.png")))
+                _log(f"[5-2node]   recorded {n_pngs} PNGs for cycle {cycle_count}")
+            except Exception as e:
+                _log(f"[5-2node] WARN: writer detach failed for cycle "
+                     f"{cycle_count}: {e}")
+
     _log(f"\n[5-2node] ALL CYCLES PASSED ({pass_count}/{cycle_count})")
+
+    # ─── post-run MP4 encoding ───
+    if record_state["enabled"]:
+        _encode_mp4_recording(record_state, args.cycles, pass_count)
+
     try:
         executor.close()
     except Exception:
         pass
     return 0 if pass_count == cycle_count else 1
+
+
+def _encode_mp4_recording(record_state, n_cycles, pass_count) -> None:
+    """Encode the per-cycle PNG sequences into per-cycle MP4 files and
+    a concatenated ``all_cycles.mp4``. Print operator-review guidance.
+
+    This is observational-only post-processing — no orchestration / replay
+    / D-CONT state is touched."""
+    import shutil
+    import subprocess as _sp
+    rec_root = record_state["root"]
+    fps = record_state["fps"]
+    if shutil.which("ffmpeg") is None:
+        _log("[5-2node] FAIL: ffmpeg not on PATH; cannot encode MP4. "
+             "Raw PNGs remain in " + str(rec_root / "raw"))
+        return
+    _log(f"\n[5-2node] ─── MP4 encoding ({fps} FPS via ffmpeg) ───")
+
+    per_cycle_mp4s: list[Path] = []
+    per_cycle_seconds: list[float] = []
+    for i, cycle_dir in enumerate(record_state["per_cycle_dirs"], start=1):
+        n_pngs = len(list(cycle_dir.glob("rgb_*.png")))
+        if n_pngs == 0:
+            _log(f"[5-2node]   cycle {i:>2}: NO PNGs in {cycle_dir} — skip")
+            continue
+        out_mp4 = rec_root / f"cycle_{i:04d}.mp4"
+        # ``rgb_*.png`` from Replicator's BasicWriter has a zero-padded
+        # frame index. Use ffmpeg's glob input rather than printf so we
+        # don't have to know the exact pad width.
+        cmd = [
+            "ffmpeg", "-y",
+            "-framerate", str(fps),
+            "-pattern_type", "glob",
+            "-i",  str(cycle_dir / "rgb_*.png"),
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-preset", "fast",
+            "-crf", "22",
+            str(out_mp4),
+        ]
+        r = _sp.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            _log(f"[5-2node]   cycle {i:>2}: ffmpeg FAILED rc={r.returncode}")
+            _log(f"[5-2node]      stderr tail: {r.stderr.strip().splitlines()[-1] if r.stderr else '(empty)'}")
+            continue
+        cycle_sec = n_pngs / fps
+        per_cycle_mp4s.append(out_mp4)
+        per_cycle_seconds.append(cycle_sec)
+        sz_mb = out_mp4.stat().st_size / 1e6
+        _log(f"[5-2node]   cycle {i:>2}: {n_pngs:>5} PNGs → {out_mp4.name} "
+             f"({sz_mb:.1f} MB, {cycle_sec:.1f}s @ {fps}fps)")
+
+    # Concatenated all-cycles MP4.
+    all_mp4 = rec_root / "all_cycles.mp4"
+    if per_cycle_mp4s:
+        concat_list = rec_root / "_concat.txt"
+        with concat_list.open("w") as fh:
+            for p in per_cycle_mp4s:
+                fh.write(f"file '{p.name}'\n")
+        r = _sp.run(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+             "-i", str(concat_list), "-c", "copy", str(all_mp4)],
+            capture_output=True, text=True, cwd=str(rec_root),
+        )
+        if r.returncode == 0:
+            sz_mb = all_mp4.stat().st_size / 1e6
+            total_sec = sum(per_cycle_seconds)
+            _log(f"[5-2node]   concatenated → {all_mp4.name} "
+                 f"({sz_mb:.1f} MB, {total_sec:.1f}s total)")
+        else:
+            _log(f"[5-2node]   FAIL: concat ffmpeg rc={r.returncode}")
+        try:
+            concat_list.unlink()
+        except Exception:
+            pass
+
+    # ─── operator-review guidance ───
+    # Phase 4A's ``_run_cycle`` derives step indices from waypoint
+    # timings. For the Phase 5 trajectories:
+    #   N1 (belt_pick_fixtureA_place):
+    #     home(0.0) + grasp_clearance(1.0) + grasp(1.0) + grasp_drop(0.3)
+    #     + grasp_close(1.5) + lift(1.5) + approach_place(4.0) + place(2.0)
+    #     + release(0.5) + retract_above_place(1.0) + return_home(2.5)
+    #     = 15.3s of authored waypoints + ~1s padding
+    #     ⇒ release_step ≈ (1+1+0.3+1.5+1.5+4+2)/PHYSICS_DT = 681 step;
+    #       n_steps_N1 = round(15.3/0.0167)+60 ≈ 978
+    #   N2 (fixtureA_pick_fixtureB_place):
+    #     home(0.0)+approach_pickA(4.0)+grasp_clearance(1.0)+grasp(1.5)
+    #     +grasp_close(1.5)+lift(1.5)+place(2.0)+release(0.5)
+    #     +retract_above_place(1.0)+return_home(4.0) = 17.0s
+    #     ⇒ grasp_close_end_step ≈ (4+1+1.5+1.5)/PHYSICS_DT = 480;
+    #       place_step ≈ (4+1+1.5+1.5+1.5+2)/PHYSICS_DT = 690;
+    #       n_steps_N2 = round(17.0/0.0167)+60 ≈ 1080
+    PHYSICS_DT = 1.0 / 60.0
+    N1_RELEASE_S = (1.0 + 1.0 + 0.3 + 1.5 + 1.5 + 4.0 + 2.0)  # ≈ 11.3s
+    N1_DURATION_S = (978 * PHYSICS_DT)                        # ≈ 16.3s
+    N2_PICKUP_S   = (4.0 + 1.0 + 1.5 + 1.5)                   # ≈ 8.0s (grasp_close end)
+    N2_PLACE_S    = (4.0 + 1.0 + 1.5 + 1.5 + 1.5 + 2.0)       # ≈ 11.5s
+    N2_DURATION_S = (1080 * PHYSICS_DT)                       # ≈ 18.0s
+
+    _log("\n[5-2node] ─── operator review guidance ───")
+    _log(f"[5-2node] output root: {rec_root}")
+    _log(f"[5-2node] full recording: {all_mp4}")
+    _log(f"[5-2node] format: H.264 (libx264) YUV420p @ {fps} FPS, CRF 22")
+    if per_cycle_seconds:
+        _log(f"[5-2node] total duration: {sum(per_cycle_seconds):.1f}s "
+             f"({len(per_cycle_seconds)} cycles × ~{N1_DURATION_S + N2_DURATION_S:.1f}s)")
+    _log("[5-2node] suggested review timestamps (concatenated all_cycles.mp4):")
+    _log(f"[5-2node]   (relative offsets within each cycle are simulated-time; "
+         f"per-cycle MP4 lengths are below)")
+    cumulative_s = 0.0
+    for i, sec in enumerate(per_cycle_seconds, start=1):
+        cs = cumulative_s
+        # Within-cycle offsets are from the AUTHORED waypoint timing — they
+        # may exceed the actual per-cycle MP4 length if Replicator
+        # dropped frames or the cycle finished early; the per-cycle MP4
+        # length is the upper bound for valid offsets.
+        n1_release_t   = min(cs + N1_RELEASE_S, cs + sec)
+        n1_boundary_t  = min(cs + N1_DURATION_S, cs + sec)
+        n2_pickup_t    = min(cs + N1_DURATION_S + N2_PICKUP_S, cs + sec)
+        n2_release_t   = min(cs + N1_DURATION_S + N2_PLACE_S, cs + sec)
+        _log(f"[5-2node]   cycle {i:>2}  (mp4 spans {cs:6.1f}s – {cs + sec:6.1f}s):")
+        _log(f"[5-2node]     N1 release on FixtureA       at {n1_release_t:6.1f}s")
+        _log(f"[5-2node]     N1.post_node / boundary      at {n1_boundary_t:6.1f}s")
+        _log(f"[5-2node]     N2.pre_node / boundary       at {n1_boundary_t:6.1f}s  (same instant; ACQUIRED_ONLY is non-stepping)")
+        _log(f"[5-2node]     N2 grasp from FixtureA       at {n2_pickup_t:6.1f}s")
+        _log(f"[5-2node]     N2 release on FixtureB       at {n2_release_t:6.1f}s")
+        cumulative_s += sec
 
 
 if __name__ == "__main__":

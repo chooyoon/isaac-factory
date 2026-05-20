@@ -51,6 +51,7 @@ Explicitly deferred (documented to prevent implicit creep later)
 
 from __future__ import annotations
 
+import enum
 import json
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -60,10 +61,35 @@ from .package import canonical_dumps
 from .predicates import Predicate
 
 
+class FailureAction(enum.Enum):
+    """Per-edge cascade policy on parent-node failure.
+
+    Cites D-FAULT-3a — per-edge enumeration on :class:`TaskGraph`, immutable
+    after :py:meth:`TaskGraph.build`. Live mutation of ``FailureAction``
+    after build is FORBIDDEN (D-FAULT-15 #13, D-SCHED-8 frozen-graph
+    invariant).
+
+    Members
+    -------
+    SKIP_NODE:
+        (default) Descendants of the failed node cascade-skipped; siblings
+        unaffected. Sibling-tolerant default per the §F.3 Phase-2 ruling.
+    ABORT_COHORT:
+        Descendants AND all fan-out siblings of the failure point
+        cascade-skipped.
+    ABORT_JOB:
+        Session → ``FAILED``; all remaining pending nodes
+        cascade-skipped uniformly.
+    """
+    SKIP_NODE    = "SKIP_NODE"
+    ABORT_COHORT = "ABORT_COHORT"
+    ABORT_JOB    = "ABORT_JOB"
+
+
 # ───────────────────────── version / constants ─────────────────────────
 
 
-GRAPH_FINGERPRINT_VERSION: int = 1
+GRAPH_FINGERPRINT_VERSION: int = 2
 """Canonical fingerprint schema version (D-SCHED-2). Bumped on any
 fingerprint format change. Bump policy is intentionally undocumented
 until the first compatibility break."""
@@ -226,9 +252,16 @@ class TaskEdge:
     ``child_id`` may start. Frozen (D-SESS-8). Hashable, so the
     validator can detect duplicates via a set; the canonical edge
     tuple in :class:`TaskGraph` is sorted by ``(parent_id, child_id)``.
+
+    The ``failure_action`` field (D-FAULT-3a) governs cascade behaviour
+    when ``parent_id`` fails. Defaults to :py:attr:`FailureAction.SKIP_NODE`
+    (sibling-tolerant; sibling-strict requires explicit ``ABORT_COHORT``).
+    The field is immutable after :py:meth:`TaskGraph.build` per D-SCHED-8;
+    live mutation is FORBIDDEN per D-FAULT-15 #13.
     """
-    parent_id: str
-    child_id:  str
+    parent_id:      str
+    child_id:       str
+    failure_action: FailureAction = FailureAction.SKIP_NODE
 
 
 # ───────────────────────── internal helpers ─────────────────────────
@@ -661,6 +694,7 @@ class TaskGraph:
                 for nid in sorted(self.nodes.keys())
             ],
             "edges": [
-                [e.parent_id, e.child_id] for e in self.edges
+                [e.parent_id, e.child_id, e.failure_action.value]
+                for e in self.edges
             ],
         })

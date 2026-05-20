@@ -155,10 +155,26 @@ def _make_minimal_package(pkg_dir: Path,
                            events_lines: list[str] | None = None,
                            manifest: dict | None = None) -> SessionPackage:
     """Construct a SessionPackage on disk with hand-authored contents.
-    Used for comparator-contract tests."""
+    Used for comparator-contract tests.
+
+    Default events stream is a minimal-but-valid Phase-5+ trace:
+    one NodeBoundarySnapshot carrying ``schema_version=2`` and one
+    terminal SessionCompleted. The Step 9 Phase 7 comparator
+    requires both for a meaningful compare; callers that want to
+    test pre-Phase-5 / INCOMPLETE / divergent-terminus behaviour
+    override ``events_lines``.
+    """
     pkg_dir.mkdir(parents=True, exist_ok=True)
     if events_lines is None:
-        events_lines = ['{"seq":0,"event_type":"X","payload":{}}']
+        events_lines = [
+            ('{"seq":0,"event_type":"NodeBoundarySnapshot",'
+             '"payload":{"canonical_hash":"h","node_id":null,'
+             '"schema_version":2,"snapshot_kind":"session_initial",'
+             '"snapshot_seq":0}}'),
+            ('{"seq":1,"event_type":"SessionCompleted",'
+             '"payload":{"completed_count":0,"failed_count":0,'
+             '"node_count":0}}'),
+        ]
     (pkg_dir / "events.jsonl").write_text("\n".join(events_lines) + "\n",
                                           encoding="utf-8")
     if manifest is None:
@@ -189,10 +205,19 @@ class TestComparatorContract:
 
     def test_one_byte_events_difference_compares_fail(self, tmp_path):
         a = _make_minimal_package(tmp_path / "a")
-        # B differs by one byte in the event payload.
+        # B differs from A in payload — same terminus + schema, so
+        # divergence is REPLAY-DIVERGENT (1), not REPLAY-INVALID.
         b = _make_minimal_package(
             tmp_path / "b",
-            events_lines=['{"seq":0,"event_type":"X","payload":{"k":1}}'],
+            events_lines=[
+                ('{"seq":0,"event_type":"NodeBoundarySnapshot",'
+                 '"payload":{"canonical_hash":"DIFFERENT","node_id":null,'
+                 '"schema_version":2,"snapshot_kind":"session_initial",'
+                 '"snapshot_seq":0}}'),
+                ('{"seq":1,"event_type":"SessionCompleted",'
+                 '"payload":{"completed_count":0,"failed_count":0,'
+                 '"node_count":0}}'),
+            ],
         )
         rc = comparator.compare_session_packages(a.path, b.path)
         assert rc == 1
@@ -249,36 +274,62 @@ class TestComparatorContract:
             f"CLI returned {result.returncode}; stdout: {result.stdout!r}; "
             f"stderr: {result.stderr!r}"
         )
-        assert "L3 REPLAY-IDENTITY: PASS" in result.stdout
+        assert "L3 REPLAY-IDENTITY: REPLAY-IDENTICAL" in result.stdout
 
     def test_cli_invocation_reports_failure_clearly(self, tmp_path):
         a = _make_minimal_package(tmp_path / "a")
+        # Phase 7: same terminus + schema, but payload differs → divergent.
         b = _make_minimal_package(
             tmp_path / "b",
-            events_lines=['{"seq":0,"event_type":"DIFFERENT"}'],
+            events_lines=[
+                ('{"seq":0,"event_type":"NodeBoundarySnapshot",'
+                 '"payload":{"canonical_hash":"DIFFERENT","node_id":null,'
+                 '"schema_version":2,"snapshot_kind":"session_initial",'
+                 '"snapshot_seq":0}}'),
+                ('{"seq":1,"event_type":"SessionCompleted",'
+                 '"payload":{"completed_count":0,"failed_count":0,'
+                 '"node_count":0}}'),
+            ],
         )
         result = subprocess.run(
             [sys.executable, str(_COMPARATOR_PATH), str(a.path), str(b.path)],
             capture_output=True, text=True,
         )
         assert result.returncode == 1
-        assert "L3 REPLAY-IDENTITY: FAIL" in result.stdout
+        assert "L3 REPLAY-IDENTITY: REPLAY-DIVERGENT" in result.stdout
 
     def test_no_tolerance_on_numeric_values(self, tmp_path):
         # The comparator MUST NOT collapse near-identical numbers.
-        # Replay identity is strict byte-equality.
+        # Replay identity is strict byte-equality (D-FAULT-11a).
+        # Both packages need a terminal event + boundary snapshot for
+        # the Phase 7 comparator to classify them comparable; only the
+        # payload float value differs.
         a = _make_minimal_package(
             tmp_path / "a",
-            events_lines=['{"x": 0.10000000000000001}'],
+            events_lines=[
+                ('{"seq":0,"event_type":"NodeBoundarySnapshot",'
+                 '"payload":{"canonical_hash":"h","node_id":null,'
+                 '"schema_version":2,"snapshot_kind":"session_initial",'
+                 '"snapshot_seq":0}}'),
+                ('{"seq":1,"event_type":"SessionCompleted",'
+                 '"payload":{"x":0.10000000000000001}}'),
+            ],
         )
         b = _make_minimal_package(
             tmp_path / "b",
-            events_lines=['{"x": 0.1}'],
+            events_lines=[
+                ('{"seq":0,"event_type":"NodeBoundarySnapshot",'
+                 '"payload":{"canonical_hash":"h","node_id":null,'
+                 '"schema_version":2,"snapshot_kind":"session_initial",'
+                 '"snapshot_seq":0}}'),
+                ('{"seq":1,"event_type":"SessionCompleted",'
+                 '"payload":{"x":0.1}}'),
+            ],
         )
         rc = comparator.compare_session_packages(a.path, b.path)
         assert rc == 1, (
             "Comparator must NOT apply numeric tolerance — replay "
-            "identity is strict byte-equality (D-REPLAY-1, D-CONT-6a)"
+            "identity is strict byte-equality (D-FAULT-11a)"
         )
 
 

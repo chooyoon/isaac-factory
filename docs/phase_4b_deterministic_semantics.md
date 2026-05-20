@@ -97,10 +97,67 @@ A *replay checkpoint* is a registry snapshot serialized at a specific orchestrat
 
 **D-EXEC-12** — A checkpoint’s identity is `(session_id, node_id, kind)`. Two checkpoints with the same identity within one session is a contract violation.
 
-### 1.5 Non-goals
+### 1.5 Sub-Phase-E interruption surface  *(Step 10 Direction A extension)*
+
+This subsection extends §1.1's Phase E semantics to admit a strictly executor-internal interruption surface introduced by Step 10 Direction A. It carves out the surface *without* relaxing any orchestration-visible D-EXEC clause. From the orchestration tick's perspective (D-EXEC-1..-3), Phase E remains a single atomic call. The interruption surface lives entirely inside the executor.
+
+**D-EXEC-13** — During Phase E, the executor MAY consult a session-supplied **interruption predicate** at deterministic **segment boundaries** internal to `execute()`. A *segment boundary* is the discrete state in which **all** of the following hold simultaneously:
+
+1. The most recent `world.step()` for the current `execute()` invocation has returned.
+2. The registry's last-tick canonical-pose write for that step has been committed (D-CONT-1).
+3. The executor holds no in-flight PhysX command (joint targets, gripper drive, belt control all settled).
+4. The robot is at a documented trajectory-segment terminus — an author-declared boundary such as approach / grasp / lift / transport / place / release / retract — NOT mid-segment, NOT between physics ticks within a segment.
+5. Object D-LIFE state is well-defined (no in-transition state).
+
+Consulting the predicate at any other point is **FORBIDDEN**. The boundary set is determined by the trajectory author at trajectory construction; the executor MUST NOT invent new boundaries at runtime.
+
+The predicate is a **pure function** of its `segment_tick: int` argument and a closure over session-provided authoritative state captured **at `execute()` invocation entry**. Permitted closure inputs are restricted to the authoritative-state whitelist:
+
+* the snapshot of pending `OperatorEnvelope` instances at `execute()` entry (D-FAULT-9);
+* the session's `_orchestration_tick` at `execute()` entry (`base_tick`);
+* the active `TaskDefinition.tick_budget_ticks` (D-FAULT-12);
+* the active `TaskDefinition.task_id` (read-only identifier).
+
+Closure over PhysX state (D-CONT-2 forbidden inputs), wall-clock sources, random sources, the executor's internal state, the session's mutable runtime fields, or any non-authoritative observational projection is **FORBIDDEN**. The predicate MUST NOT emit events, log, mutate any captured object, or perform I/O.
+
+If the predicate returns `True` at a legal segment boundary, the executor MUST:
+
+* perform NO further `world.step()` invocations within this `execute()` call;
+* perform NO further PhysX commands within this `execute()` call;
+* return a `TaskResult` whose `outcome` is `TaskOutcome.EXECUTION_INTERRUPTED` (D-FAULT-1b);
+* populate `ticks_consumed` with the cumulative count of `world.step()` invocations performed up to and including the most recent settled boundary (D-FAULT-12c).
+
+If the predicate returns `False` at every boundary the executor consults, `execute()` runs to trajectory completion exactly as in the Phase 4A baseline; `outcome` is the normal validator verdict and `EXECUTION_INTERRUPTED` is **NOT** produced.
+
+**D-EXEC-13a** — Phase E remains **atomic from the orchestration perspective**. D-FAULT-6a is preserved: the session calls `executor.execute(task, ...)` once, observes a single `TaskResult` return, and proceeds to Phase F/G. The session MUST NOT, during a single Phase E:
+
+* interleave Phase A envelope drains;
+* dispatch the EventBus;
+* emit events;
+* take boundary snapshots (D-EXEC-10's three checkpoints are exhaustive);
+* observe `segment_tick` values or per-segment events.
+
+Sub-Phase-E interruption is **executor-internal**. From every D-EXEC-1..-12 perspective, Phase E is one atomic call; the predicate-consultation surface is not an orchestration phenomenon, not a phase reordering, not a new event-emission point, and not a new mutation path.
+
+**D-EXEC-13b** — `segment_tick` (the predicate's integer argument) is the count of segment boundaries completed strictly before the predicate call within the current `execute()` invocation: `segment_tick = 0` before any segment runs, `segment_tick = N` after `N` segments complete. `segment_tick` is **executor-deterministic**: for identical inputs and identical trajectory, every cycle produces an identical sequence of `segment_tick` values at identical predicate-consultation sites.
+
+The forensic fields `interrupted_at_segment_index: int | None` and `interrupted_at_segment_name: str | None` on `TaskResult` are **observational, not authoritative**. They MUST be derivable from `ticks_consumed` plus the trajectory's static segment-tick map and MUST NOT enter the per-task fingerprint (D-FAULT-10). Duplicating their state into authoritative continuity would double-bind replay-identity to the same underlying fact, a violation of D-CONT-7a's projection-purity discipline.
+
+**D-EXEC-13c** — The interruption predicate is **session-constructed only**. Construction of an interruption predicate outside the session — by the executor, by trajectory authors, by external callers, by validator code, by registry code — is **FORBIDDEN**. This preserves single-emitter discipline (D-FAULT-2) for the interruption surface: the session is the sole authority that selects which envelopes and which budget shape the predicate's `True`-condition.
+
+The executor consumes the predicate as an opaque callable: it MUST NOT introspect the predicate's closure, MUST NOT re-derive its inputs, and MUST NOT replace the predicate with an alternative mid-`execute()`. Predicate substitution mid-execute, predicate composition by the executor, or predicate state-carrying across `execute()` invocations are all **FORBIDDEN**.
+
+**D-EXEC-13d** — Sub-Phase-E interruption is **not** speculative: the executor MUST act on the predicate's first `True` return at a legal boundary by terminating the `execute()` call. Continuing past a `True` return — even with the intent of "checking again later" or "trying to reach a more convenient boundary" — is **FORBIDDEN**. There is no soft-interruption, no retry-the-predicate, no defer-until-next-segment semantic.
+
+*Rationale.* The interruption surface is, by construction, a **deterministic observational consequence** of orchestration truth, not an independent control authority. The predicate reads only authoritative state captured at execute-entry; the executor honors the predicate at deterministic boundaries; the session classifies the result post-Phase-E (D-FAULT-3b). Across this boundary, no authority is widened, no mutation path is added, no event ordering is relaxed. Phase E remains atomic from orchestration's perspective. Sub-Phase-E is an executor-internal mechanism for honoring a session-supplied predicate, nothing more.
+
+### 1.6 Non-goals
 
 * Multi-physics-tick atomicity windows. Each physics tick is a unit; commands within one physics tick are not transactional across ticks.
 * Per-physics-tick replay checkpoints. The per-tick `step_observer` may *record* tick-rate telemetry, but that telemetry is **diagnostic state** (§5), not replay-authoritative.
+* Per-physics-tick interruption granularity. The predicate is consulted at **segment** boundaries only (D-EXEC-13 condition 4); per-step predicate consultation is **FORBIDDEN**.
+* Sub-segment interruption ("interrupt 30% of the way through grasp"). Interruption eligibility exists only at the boundaries D-EXEC-13 enumerates.
+* Async cancellation, signal-driven interruption, or thread-based interruption. The predicate is synchronously consulted by the executor in the same thread as `world.step()`.
 
 ---
 
@@ -575,7 +632,7 @@ The following are recognized gaps that future revisions will need to address. Li
 1. **`OperatorOverride` event commutativity.** The contract specifies operator commands enter only at Phase A; it does not yet specify whether two operator commands in the same Phase A drain are processed in arrival order or in a canonical order. Phase 4B step 11 will close this gap.
 2. **Diagnostic-event filtering.** D-TRACE-5 says diagnostic records live outside the authoritative path. It does not specify the exact directory layout. The implementation step that lands diagnostic trace plumbing will pin it.
 3. **Cross-cell replay identity.** Out of scope here; deferred to a hypothetical Phase 5+ cross-cell contract.
-4. **Failure-action determinism under nested cascades.** When task A fails and tasks B and C both depend on A, the order in which B and C are marked `TaskCascadeSkipped` follows D-SCHED-3. But the contract does not yet specify cascade depth limits or cycle-of-cascades edge cases. Phase 4B step 9 will surface and pin this.
+4. **Failure-action determinism under nested cascades.** Pinned in §13 D-FAULT (D-FAULT-3, D-FAULT-3a, D-FAULT-4, D-FAULT-7) — sibling-tolerant default with explicit `FailureAction.ABORT_COHORT` / `ABORT_JOB` escalation; cascade emission iterates `graph.canonical_order`; emission is idempotent at the transition.
 
 ---
 
@@ -618,10 +675,10 @@ Four principles bind the partition; each is normative.
 * **object ownership** — the D-LIFE state of each managed object (D-LIFE-1);
 * **fixture occupancy** — the D-LIFE-6 binary state of each managed fixture;
 * **canonical object pose** — the final per-tick `update_object_pose` write the outgoing node made to the registry for each registered object;
-* **session orchestration sets** — `_completed`, `_failed`, `_retry_counts`, `_node_runtime` (D-SESS-1);
+* **session orchestration sets** — `_completed`, `_failed`, `_skipped`, `_retry_counts`, `_node_runtime` (D-SESS-1; `_skipped` added by D-FAULT-4a);
 * **deterministic event-ordering metadata** — `seq`, `orchestration_tick`, source `node_id`, snapshot `kind` (D-BUS-3, D-EXEC-12).
 
-This list is the complete authoritative continuity set for Phase 4B. Anything not in this list is, by D-CONT-1, not authoritative. Expansion of this set is a contract revision, not an implementation detail.
+This list is the complete authoritative continuity set for Phase 4B. Anything not in this list is, by D-CONT-1, not authoritative. Expansion of this set is a contract revision, not an implementation detail. The Step 9 expansion (`_skipped` and the per-node `_cascade_emitted` / `_blocked_emission_key` fields of `_node_runtime`) is normatively pinned by D-FAULT-4a and D-FAULT-7; the corresponding `BOUNDARY_SNAPSHOT_SCHEMA_VERSION` bump from 1 to 2 is governed by D-CONT-6b.
 
 ### 12.3 D-CONT-2 — Non-authoritative state forbidden as continuity input
 
@@ -736,6 +793,7 @@ snapshot = {
     "session": {
         "completed":    sorted(session_completed),
         "failed":       sorted(session_failed),
+        "skipped":      sorted(session_skipped),   # D-FAULT-4a (schema_version=2)
         "retry_counts": [
             [nid, session_retry_counts.get(nid, 0)]
             for nid in sorted(session_retry_counts)
@@ -751,9 +809,9 @@ Iteration over any mapping during snapshot serialization uses `sorted(keys)`. Ca
 * object D-LIFE state, per `object_id` (D-CONT-1);
 * fixture occupancy, per `fixture_id` (D-CONT-1, D-CONT-5);
 * canonical object pose (last-tick `update_object_pose` value), per `object_id` (D-CONT-1);
-* session orchestration sets (`_completed`, `_failed`, `_retry_counts`, `_node_runtime`);
+* session orchestration sets (`_completed`, `_failed`, `_skipped`, `_retry_counts`, `_node_runtime`); `_skipped` and the per-node idempotency fields are mandatory from `BOUNDARY_SNAPSHOT_SCHEMA_VERSION = 2` onward (D-FAULT-4a, D-FAULT-7);
 * deterministic event-ordering metadata (`seq`, `orchestration_tick`, source `node_id`, snapshot `kind`);
-* `schema_version` constant per snapshot kind (D-TRACE-6).
+* `schema_version` constant per snapshot kind (D-TRACE-6; current value `2` post-Step-9 per D-FAULT-4a).
 
 **Forbidden snapshot content** (this list is normative):
 
@@ -857,7 +915,7 @@ This contract section explicitly preserves and does NOT relax the following arch
 
 * **No replay-recovery machinery.** A failed boundary precondition stalls the session deterministically. There is no recovery path (D-FORBID-9).
 
-* **No retry semantics.** `_retry_counts` is plumbed but unconsumed in Step 8. Step 9 lands retries with their own conformance to this section.
+* **No retry semantics.** `_retry_counts` is plumbed but unconsumed in Step 8. Step 9 explicitly **defers** retry semantics further (D-FAULT-8b) — re-attempt in Step 9 is expressed only via explicit recovery nodes (D-FAULT-8). `_retry_counts` remains plumbed-but-unused; retry semantics return only under a dedicated future contract.
 
 * **No async orchestration.** D-FORBID-1, D-FORBID-2. Synchronous, single-process, single-threaded with respect to PhysX, sequential with respect to task execution (D-SCALE-1).
 
@@ -887,6 +945,448 @@ If the two-node exercise passes but the contamination test in (4) fails, Step 8 
 
 ---
 
+## 13. Deterministic Failure Semantics Contract  *(D-FAULT)*
+
+### 13.0 Scope
+
+This section binds **Step 9 onward** — the first runtime moment at which the deterministic-execution contract acknowledges failure as a first-class participant in orchestration. Up to Step 8, the contract enforced what authority survives a successful boundary handoff. From Step 9 forward, the contract enforces what authority survives an **unsuccessful** transition: failed verdicts, aborted execution, exceeded budgets, broken invariants, and replay-integrity refusals.
+
+Step 9 does not introduce a second orchestration system. It extends the existing single orchestration authority (D-SESS-1) to acknowledge failure deterministically. Every failure is an explicit transition. Every transition is append-only. Every transition is replay-authoritative.
+
+Subsequent implementation steps (10 replay-identity tooling extension, 11 operator channel ingress, 12 conveyor refactor, and any future Phase 4C revision) MUST cite this section for every failure-path assumption they make.
+
+### 13.1 D-FAULT-1 — Orchestration-level failure taxonomy
+
+**D-FAULT-1** — Failure at the orchestration level is **strictly enumerated** as exactly one of the following eight classes:
+
+| class | origin authority | emitted via |
+|---|---|---|
+| `NODE_EXECUTION_FAILURE` | `UnifiedValidator` inside `TaskExecutor.execute()` | `NodeExecutionCompleted` with `passed=False` and inner `TaskOutcome` |
+| `PRECONDITION_FAILURE` | scheduler (D-SCHED-13) | `NodeBlocked` with `status="blocked_by_precondition"` or `"blocked_by_predicate_error"` |
+| `AUTHORITY_VIOLATION` | `ExecutionSession` postcondition check at Phase G | `AuthorityViolationDetected` |
+| `CONTINUITY_VALIDATION_FAILURE` | `ExecutionSession` boundary-snapshot postcondition at Phase G | `ContinuityValidationFailed` |
+| `TIMEOUT_FAILURE` | `ExecutionSession` post-Phase-E tick-budget check (D-FAULT-12) | `NodeTimeoutTripped` |
+| `OPERATOR_ABORT` | `OperatorAbortRequested` envelope drained at Phase A | `SessionAborting` / `SessionAborted` |
+| `INFRASTRUCTURE_DEGRADATION` | out-of-band detector (launch harness) | sidecar artifact (D-FAULT-13); **NOT** in `events.jsonl` |
+| `REPLAY_INTEGRITY_FAILURE` | replay-identity comparator tool | comparator exit code + replay audit artifact (D-FAULT-11); **NOT** in any session's `events.jsonl` |
+
+Expansion of this list is a contract revision, not an implementation detail. A failure mode not in this list is, by D-FAULT-1, not a recognized failure mode.
+
+#### 13.1.1 D-FAULT-1a — Inner sub-classification
+
+**D-FAULT-1a** — The `NODE_EXECUTION_FAILURE` class is sub-classified by `TaskOutcome` (Phase 4A enum, currently 8 non-PASS values). Sub-classification of any other orchestration-level class via `TaskOutcome` is **FORBIDDEN**; `TaskOutcome` is a per-task validator verdict and its mutation authority remains with Phase 4A's `UnifiedValidator`.
+
+*Rationale.* Two-tier taxonomy preserves the Mutation Authority Matrix: orchestration-level classes are session-owned; per-task sub-classification is validator-owned. Conflating the two would breach D-SESS-1.
+
+#### 13.1.2 D-FAULT-1b — Executor-reported interruption sub-classifier  *(Step 10 Direction A)*
+
+**D-FAULT-1b** — `TaskOutcome.EXECUTION_INTERRUPTED` is the **executor-reported, mechanically-neutral** outcome value indicating that `TaskExecutor.execute()` stopped at a deterministic segment boundary in response to a session-supplied interruption predicate (D-EXEC-13). It is a sub-classifier of `NODE_EXECUTION_FAILURE` per D-FAULT-1a; it MUST NOT be promoted to a top-level D-FAULT-1 class, and it MUST NOT be emitted by any authority other than `TaskExecutor.execute()`.
+
+The value is deliberately neutral: it describes only the **mechanical event** ("the executor returned early at a deterministic boundary") and carries no commitment to **why** the executor returned early. The session combines this outcome with its envelope-queue snapshot at `execute()` entry, the resulting `ticks_consumed`, and `tick_budget_ticks` to assign the orchestration-level failure class per D-FAULT-3b. The executor MUST NOT classify the interruption cause; that authority remains with the session per D-FAULT-2.
+
+A `TaskResult` carrying `outcome == EXECUTION_INTERRUPTED` MUST satisfy:
+
+* `ticks_consumed >= 0` and `ticks_consumed` equals the cumulative settled-boundary `world.step()` count (D-FAULT-12c);
+* `interrupted_at_segment_index: int` is populated and is the index (0-based) of the segment boundary at which the predicate returned `True`;
+* `interrupted_at_segment_name: str` is populated and is the author-declared name of that boundary;
+* `passed == False` on the corresponding `NodeExecutionCompleted` event.
+
+`interrupted_at_segment_index` and `interrupted_at_segment_name` are **observational** per D-EXEC-13b and MUST NOT enter the per-task fingerprint (D-FAULT-10). Only `ticks_consumed` and the `EXECUTION_INTERRUPTED` outcome enter the fingerprint.
+
+*Rationale.* Two-layer authority preserves D-FAULT-1a's layering: executor reports a mechanical verdict, session interprets it. Conflating mechanical interruption (an executor concern) with orchestration-level classification (a session concern) would re-introduce the hidden-authority anti-pattern D-FAULT-15 #16 was specifically introduced to prevent. The neutral-surface design keeps the D-FAULT-1 enumeration immutable while admitting a new executor-internal mechanical surface; the eight-class D-FAULT-1 taxonomy does NOT expand.
+
+### 13.2 D-FAULT-2 — Origin authority and emission discipline
+
+**D-FAULT-2** — Each failure class has exactly **one** origin authority (per D-FAULT-1 table). The same class **MUST NOT** be emitted by any authority not listed for it. A would-be second emitter is a contract violation per D-CONT-7a.
+
+*Rationale.* Single-emitter discipline is the failure-path analogue of D-CONT-5's single-mutator discipline. Multiple emitters of the same class allow drift across paths.
+
+### 13.3 D-FAULT-3 — Propagation rules
+
+**D-FAULT-3** — A failure-class emission propagates per the following table:
+
+| emitted class | downstream effect |
+|---|---|
+| `NODE_EXECUTION_FAILURE` | failed node added to `_failed`; descendants per `FailureAction` (D-FAULT-3a) |
+| `PRECONDITION_FAILURE` | node remains pending; no state mutation; descendants stay `blocked_by_parents` |
+| `AUTHORITY_VIOLATION` | session → `FAILED` immediately; remaining pending nodes cascade-skipped uniformly; **FailureAction is overridden** |
+| `CONTINUITY_VALIDATION_FAILURE` | session → `FAILED` immediately; same as `AUTHORITY_VIOLATION` |
+| `TIMEOUT_FAILURE` | failed node added to `_failed`; descendants per `FailureAction` (D-FAULT-3a) |
+| `OPERATOR_ABORT` | session → `ABORTING` → `ABORTED`; remaining pending nodes cascade-skipped uniformly; **FailureAction is overridden** |
+| `INFRASTRUCTURE_DEGRADATION` | session presumed dead; no further propagation possible in-session |
+| `REPLAY_INTEGRITY_FAILURE` | n/a in-session; comparator exits non-zero |
+
+Terminal `SessionState` values introduced by D-FAULT-3 are `ABORTING` (transient, entered at the abort drain), `ABORTED` (terminal, operator-initiated), and `FAILED` (terminal, validator/scheduler/authority-violation/timeout/continuity-validation initiated). `ABORTED` and `FAILED` are byte-distinguishable terminal states; `RECOVERING` is **FORBIDDEN** as a `SessionState` value (D-FAULT-15 #18).
+
+#### 13.3.1 D-FAULT-3a — `FailureAction` enumeration
+
+**D-FAULT-3a** — `FailureAction` is a per-edge enumeration on `TaskGraph`, immutable after `graph.build()`. Permitted values:
+
+| value | meaning |
+|---|---|
+| `SKIP_NODE` (default) | descendants of failed node cascade-skipped; siblings unaffected |
+| `ABORT_COHORT` | descendants AND all fan-out siblings of the failure point cascade-skipped |
+| `ABORT_JOB` | session → `FAILED`; all remaining pending nodes cascade-skipped uniformly |
+
+Sibling-tolerant default (D-FAULT-3a `SKIP_NODE`). Sibling-strict requires explicit `ABORT_COHORT` declaration per-edge. Live mutation of `FailureAction` after `graph.build()` is **FORBIDDEN** (D-SCHED-8 frozen-graph invariant).
+
+#### 13.3.2 D-FAULT-3b — Session classification of `EXECUTION_INTERRUPTED`  *(Step 10 Direction A)*
+
+**D-FAULT-3b** — When `TaskExecutor.execute()` returns a `TaskResult` with `outcome == TaskOutcome.EXECUTION_INTERRUPTED` (D-FAULT-1b), the session MUST classify the orchestration-level failure class at **end of Phase E**, **before** Phase F/G, as a **pure function** of the following authoritative inputs:
+
+* `envelope_snapshot_at_execute_entry`: the tuple of `OperatorEnvelope` instances pending at `execute()` invocation entry (canonical-ordered per D-FAULT-9);
+* `base_tick`: the session's `_orchestration_tick` at `execute()` invocation entry (D-EXEC-12 metadata);
+* `result.ticks_consumed`: the executor-reported settled-boundary `world.step()` count (D-FAULT-12c);
+* `task.tick_budget_ticks`: the per-task tick budget (D-FAULT-12).
+
+Classification proceeds by evaluating the following rows **in declared order**; the first matching row applies and is the assigned orchestration-level class:
+
+| # | condition | orchestration-level class | propagation |
+|---|---|---|---|
+| 1 | an `OperatorEnvelope` with `kind == "abort"` and `requested_at_tick ≤ base_tick + result.ticks_consumed` exists in `envelope_snapshot_at_execute_entry` | `OPERATOR_ABORT` | per D-FAULT-3 row 6 (session → `ABORTING` → `ABORTED`; cascade-skip uniformly) |
+| 2 | `result.ticks_consumed > task.tick_budget_ticks` | `TIMEOUT_FAILURE` | per D-FAULT-3 row 5 (failed node added to `_failed`; descendants per `FailureAction`) |
+| 3 | otherwise | `NODE_EXECUTION_FAILURE` (interpreted: "predicate-driven stop with no recognized cause") | per D-FAULT-3 row 1 |
+
+The classification is **declared, not best-fit**: the first matching row applies. The ordering encodes architectural priority — operator intent (envelope) outranks budget exhaustion outranks unattributed mechanical interruption. Multi-cause interruptions (envelope eligible **and** budget exceeded at the same boundary) deterministically resolve to row 1 (`OPERATOR_ABORT`); no soft-handling, no implicit composition, no joint classification.
+
+The session MUST:
+
+* perform the classification as a pure function of the four inputs above; consultation of wall-clock sources, PhysX state, observational projections, or session-side mutable state during classification is **FORBIDDEN**;
+* emit the corresponding ingress event(s) at the classification site as part of post-Phase-E handling:
+  * for row 1 — `OperatorAbortRequested` (deferred from Phase A drain since the envelope was retained as eligible-but-undrained at execute-entry), followed by `SessionAborting`;
+  * for row 2 — `NodeTimeoutTripped`;
+  * for row 3 — no additional ingress event; `NodeExecutionCompleted` with `passed=False` and `outcome=EXECUTION_INTERRUPTED` is the sole transition record;
+* propagate per the matching row in D-FAULT-3 (cascade, abort, or fail);
+* skip Phase G occupancy commit (`outcome != PASS`, D-CONT-5 unchanged);
+* leave retained state (D-LIFE, fixture occupancy, canonical pose) at its last-tick truth per D-FAULT-5 / D-FAULT-5b — the contradiction is preserved verbatim until an explicit recovery node (D-FAULT-8) resolves it.
+
+Row 3 (`NODE_EXECUTION_FAILURE` from an unattributed interruption) SHOULD be rare in practice: it indicates the predicate returned `True` despite no eligible envelope and no budget violation, which is consistent with a contract-violation in predicate construction. A pure-Python contract test (Step 10 Phase 3) asserts that legitimate predicate constructions cannot reach row 3.
+
+*Rationale.* `EXECUTION_INTERRUPTED` is mechanically neutral (D-FAULT-1b). Classification must be deterministic, single-authority, and pure-function over authoritative inputs; an ordered, declared rule preserves replay-authority. Multi-cause resolution is by declared priority rather than evidence-weighing; evidence-weighing would re-introduce the "soft failure" anti-pattern D-FAULT-15 #3 forbids. The classification is a session-side analogue of D-FAULT-2's single-emitter discipline: one authority, one rule, one classification per `EXECUTION_INTERRUPTED` return.
+
+### 13.4 D-FAULT-4 — `TaskCascadeSkipped` distinct from `NodeFailed`
+
+**D-FAULT-4** — A node whose pending state is resolved by **cascade** (descendant of a `failed` node, or skipped under `ABORT_COHORT` / `ABORT_JOB`) **MUST** be recorded via a distinct `TaskCascadeSkipped` event, **never** via `NodeFailed`. The `_skipped` set is distinct from the `_failed` set in `SessionRuntimeSnapshot`.
+
+*Rationale.* An operator inspecting the trace must distinguish nodes that genuinely failed (their executor ran and produced a non-PASS verdict) from nodes that were skipped (their executor never ran). Conflating them obscures forensic provenance.
+
+#### 13.4.1 D-FAULT-4a — `_skipped` enters authoritative continuity
+
+**D-FAULT-4a** — The `_skipped: frozenset[str]` set is added to the authoritative continuity enumeration defined by D-CONT-1. The boundary snapshot schema is extended (D-CONT-6) to include `_skipped` alongside `_completed`, `_failed`, `_retry_counts`. `BOUNDARY_SNAPSHOT_SCHEMA_VERSION` increments from 1 to 2 at Step 9 Phase 4 (runtime wiring) landing. Mismatched-version replays are refused per D-CONT-6b.
+
+*Rationale.* `_skipped` participates in continuity (recovery preconditions consult it). It is therefore authoritative per D-CONT-1's definition and MUST appear in the boundary snapshot.
+
+### 13.5 D-FAULT-5 — Retained-state mutation on failure
+
+**D-FAULT-5** — Retained-state mutation on failure is **FORBIDDEN** except as explicitly enumerated by D-CONT-5 (occupancy mutation on PASS). Specifically:
+
+* implicit rollback of canonical object pose: **FORBIDDEN**;
+* implicit clearing of fixture occupancy on failed pick: **FORBIDDEN**;
+* implicit release of D-LIFE `attached` state on failed transport: **FORBIDDEN**;
+* implicit reset of any `NodeRuntimeState` field outside the session's documented transition table: **FORBIDDEN**.
+
+The post-failure boundary snapshot **MUST** reflect the last-tick truth of all authoritative fields. Recovery topology resolves contradictions explicitly.
+
+```python
+# FORBIDDEN — implicit rollback to "clean" the snapshot.
+if task_result.outcome != TaskOutcome.PASS:
+    registry.update_object_pose(peg, pre_failure_pose)   # LIE
+    registry.mark_fixture_empty(fixture_a)                # WRONG AUTHORITY
+```
+
+```python
+# REQUIRED — failure preserves last-tick truth.
+if task_result.outcome != TaskOutcome.PASS:
+    # No mutation. The session records `_failed.add(node_id)` and emits
+    # NodeExecutionCompleted with passed=False. Post-G snapshot serializes
+    # the actual canonical pose, the actual fixture occupancy.
+    pass
+```
+
+#### 13.5.1 D-FAULT-5a — Pose-on-FAIL semantic
+
+**D-FAULT-5a** — The canonical object pose at the post-failure boundary is the **last-tick `update_object_pose` write** the failing node made (D-CONT-1 definition, unchanged). Frozen-pre-failure semantics (snapshot lies about reality) are **FORBIDDEN**. Dual-snapshot semantics (two truths in one snapshot) are **FORBIDDEN**.
+
+#### 13.5.2 D-FAULT-5b — Fixture occupancy on FAIL
+
+**D-FAULT-5b** — Fixture occupancy is **NOT** mutated on failure (D-CONT-5 already requires PASS for mutation). A failed pick from an occupied fixture leaves occupancy unchanged; a failed place at an empty fixture leaves occupancy unchanged. The resulting contradiction between occupancy and canonical pose is **REQUIRED** to be preserved verbatim in the post-failure boundary snapshot.
+
+*Rationale.* Contradictions are forensic truth. The architectural rule forbids silent healing. Recovery nodes (declared in graph topology) resolve contradictions explicitly via subsequent transitions.
+
+### 13.6 D-FAULT-6 — Abort/cancellation boundary phase
+
+**D-FAULT-6** — Operator abort enters orchestration **only at Phase A** of an orchestration tick. The `OperatorAbortRequested` envelope is drained at Phase A; if accepted, the session transitions `RUNNING` → `ABORTING` before any Phase B scheduling. Abort ingress at any other phase is **FORBIDDEN**.
+
+Specifically:
+
+* mid-Phase-E (mid-`execute()`) interrupt is **FORBIDDEN**;
+* between-`world.step()` interrupt inside Phase E is **FORBIDDEN**;
+* method-as-ingress (e.g. `ExecutionSession.request_abort()`) is **FORBIDDEN**;
+* multiple ingress paths for the same abort are **FORBIDDEN**.
+
+#### 13.6.1 D-FAULT-6a — Phase E atomicity
+
+**D-FAULT-6a** — Phase E is **atomic** from the orchestration perspective. The executor runs its declared trajectory to completion (or to executor-internal exception). The session does not interrupt mid-step on budget exhaustion, abort request, or any other condition. Mid-step interrupt would break D-EXEC-2 (no event out of phase) and D-CONT-3 (boundary quiescence).
+
+### 13.7 D-FAULT-7 — Idempotent cancellation
+
+**D-FAULT-7** — Cancellation is idempotent at the **transition**, not the envelope:
+
+* a node cascade-skipped twice (e.g. two failed parents) **MUST** emit exactly one `TaskCascadeSkipped` event;
+* an `OperatorAbortRequested` envelope arriving while the session is already in `ABORTING` or `ABORTED` **MUST** be recorded in the trace (as an envelope ingress event) but **MUST NOT** trigger a second state transition;
+* a `NodeBlocked` event for a given node fires at most once per blocking-episode, where an episode begins when the node transitions to blocked and ends when it un-blocks (parent completes, predicate succeeds) or transitions to terminal.
+
+The session **MUST** maintain per-node idempotency tracking in `NodeRuntimeState`:
+
+* `_cascade_emitted: bool` (set on `TaskCascadeSkipped` emission);
+* `_blocked_emission_key: str | None` (set on `NodeBlocked` emission; cleared on un-block).
+
+These fields are authoritative (D-FAULT-4a extends D-CONT-1 to include them via `_node_runtime`).
+
+### 13.8 D-FAULT-8 — Recovery as explicit graph topology
+
+**D-FAULT-8** — Recovery from any failure class is **exclusively** expressed as graph topology: a `TaskNode` whose `metadata["recovery_of"] == "<failed_node_id>"`, reachable via a graph edge from the failure point. Implicit recovery — any runtime code path that re-attempts work without an explicit graph node — is **FORBIDDEN**.
+
+A recovery node:
+
+* is a normal `TaskNode` from the scheduler's perspective (D-SCHED-2/-3 canonical-order applies);
+* carries `metadata["recovery_of"]: str | None` (None for non-recovery nodes);
+* on entry, emits a `RecoveryNodeEntered` event whose payload includes `recovers_from_node_id` and `recovers_from_outcome` (extracted from the failed node's `TaskResult`).
+
+#### 13.8.1 D-FAULT-8a — Topology-derived recovery inference forbidden
+
+**D-FAULT-8a** — Inferring "recovery node" status from graph topology alone (e.g. "any node downstream of a failure-edge is a recovery node") is **FORBIDDEN**. The `metadata["recovery_of"]` field is the **only** authoritative source. Topology-derived inference is a hidden authority.
+
+#### 13.8.2 D-FAULT-8b — No retry in Step 9
+
+**D-FAULT-8b** — Retry of the same `TaskNode` (re-execution of the same `task_ref` with the same node_id) is **FORBIDDEN** in Step 9. The `retry_counts` parameter on `TopologicalSequentialScheduler.next_runnable_node(...)` remains plumbed-but-unused (Step 5 forward-compat). Re-attempt is expressed via a distinct recovery node (different `node_id`).
+
+*Rationale.* Retry semantics are the largest source of implicit orchestration in industrial systems. Step 9 prefers graph-explicit recovery; retry returns under a dedicated future contract.
+
+### 13.9 D-FAULT-9 — Operator envelope schema
+
+**D-FAULT-9** — Operator commands enter orchestration via `OperatorEnvelope`, a frozen dataclass with the following schema (canonical-JSON serializable, stable across versions):
+
+```python
+@dataclass(frozen=True, slots=True)
+class OperatorEnvelope:
+    kind:               str          # "abort" (Step 9); Step 11 adds "pause"|"resume"|"manual_advance"
+    requested_at_tick:  int          # earliest orchestration_tick at which Phase A drains this envelope
+    reason:             str          # short, operator-supplied; participates in fingerprint
+    envelope_id:        str          # deterministic UUID-equivalent (e.g. blake2b digest of (kind, tick, reason, sequence_within_pending))
+```
+
+Envelopes are passed to `ExecutionSession.__init__` via `pending_operator_envelopes: tuple[OperatorEnvelope, ...]`. The tuple is sorted by `(requested_at_tick, envelope_id)` for canonical ordering. Live-channel ingress (Step 11) **MUST** preserve this schema and the canonical-ordering discipline.
+
+#### 13.9.1 D-FAULT-9a — Step 9 supports only `kind="abort"`
+
+**D-FAULT-9a** — In Step 9, the only permitted `OperatorEnvelope.kind` value is `"abort"`. Other kinds (`pause`, `resume`, `manual_advance`) are reserved for Step 11; an envelope with an unrecognized kind **MUST** be rejected at session construction with `ExecutionSessionError`.
+
+### 13.10 D-FAULT-10 — Failure-event canonical-JSON fingerprinting
+
+**D-FAULT-10** — Every failure-related event (`NodeExecutionCompleted` with `passed=False`, `NodeBlocked`, `TaskCascadeSkipped`, `NodeTimeoutTripped`, `AuthorityViolationDetected`, `ContinuityValidationFailed`, `OperatorAbortRequested`, `SessionAborting`, `SessionAborted`, `SessionFailed`, `RecoveryNodeEntered`) **MUST** be canonical-JSON serialized via `canonical_dumps` (D-TRACE-8). Float fields in failure payloads (e.g. evidence in `TaskOutcome` sub-classification) **MUST** originate from a deterministic PhysX read or deterministic arithmetic on PhysX reads; computed intermediates that introduce float-repr instability are **FORBIDDEN**.
+
+### 13.11 D-FAULT-11 — Replay-integrity failure handling
+
+**D-FAULT-11** — `REPLAY_INTEGRITY_FAILURE` is a **meta-failure** detected by the replay-identity comparator tool (`tools/check_session_replay_identity.py`). It is **NOT** an in-session event:
+
+* it **MUST NOT** be appended to any session's `events.jsonl`;
+* it is recorded only via the comparator's exit code (non-zero) and an audit artifact at a comparator-defined location (e.g. `replay_audit/<timestamp>_<pkg_a>_vs_<pkg_b>.json`);
+* a session that subsequently fails replay does NOT become retroactively `FAILED` — its own `events.jsonl` remains unchanged.
+
+#### 13.11.1 D-FAULT-11a — Replay-tolerance creep forbidden
+
+**D-FAULT-11a** — The comparator **MUST** apply strict byte-equality (no numerical tolerance, no field-level fuzziness, no "approximately equal" replay). A future PR introducing replay tolerance is rejected at review under this clause and D-REPLAY-1.
+
+### 13.12 D-FAULT-12 — Tick-budget enforcement
+
+**D-FAULT-12** — Task-level timeout is enforced as a **tick budget**, never as wall-clock time:
+
+* every `TaskDefinition` declares `tick_budget_ticks: int`;
+* the executor reports `ticks_consumed: int` in `TaskResult`;
+* the session evaluates `ticks_consumed > tick_budget_ticks` post-Phase-E and, if true, sets `TIMEOUT_FAILURE`;
+* the budget enforcement happens at the per-`world.step()` count granularity, post-execution, not at sub-phase granularity.
+
+Wall-clock based timeout is **FORBIDDEN**. Watchdog threads are **FORBIDDEN**. Asynchronous timeout mutation is **FORBIDDEN**.
+
+#### 13.12.1 D-FAULT-12a — Phase E atomicity preserved on timeout
+
+**D-FAULT-12a** — Timeout detection is **post-Phase-E**. The session evaluates `ticks_consumed > tick_budget_ticks` **after** `execute()` returns, regardless of whether the executor ran to trajectory completion or returned early via D-EXEC-13 sub-Phase-E interruption. Mid-Phase-E **orchestration-observable** budget interrupt — the session interrupting the executor mid-`execute()`, the session polling the executor for budget violation during `execute()`, or any wall-clock-driven session-side watchdog — is **FORBIDDEN** (D-FAULT-6a, D-EXEC-13a).
+
+Sub-Phase-E budget-aware predicate consultation per D-EXEC-13 is permitted and is **not** a violation of this clause: it is executor-internal, the session observes only the post-Phase-E `TaskResult`, and `ticks_consumed > tick_budget_ticks` is detected at the same post-Phase-E classification site (D-FAULT-3b row 2) regardless of whether `execute()` returned early or ran to completion.
+
+#### 13.12.2 D-FAULT-12b — Margin requirement
+
+**D-FAULT-12b** — Trajectory authoring **MUST** produce `tick_budget_ticks` values with a documented margin over the trajectory's declared tick length. A pure-Python test asserts `tick_budget_ticks >= trajectory_length_ticks + MARGIN_TICKS` for every registered task. Tight budgets that exceed-by-one in one run and finish-by-one in another are a divergence vector.
+
+#### 13.12.3 D-FAULT-12c — `ticks_consumed` ontology  *(Step 10 Direction A)*
+
+**D-FAULT-12c** — `ticks_consumed: int` on `TaskResult` is REQUIRED to be a **non-negative integer count** of deterministic `world.step()` invocations that the executor performed during the most recent `execute()` call. The field is **wall-clock-independent by construction** and is produced by counting step invocations at their site.
+
+Specifically:
+
+* `ticks_consumed == 0` iff zero `world.step()` invocations were issued during the call (boundary-0 interrupt per D-EXEC-13, or empty trajectory);
+* for a `TaskResult` whose `outcome` is **not** `EXECUTION_INTERRUPTED` and whose underlying trajectory ran to completion: `ticks_consumed == sum_of_segment_tick_lengths` for the executed trajectory;
+* for a `TaskResult` whose `outcome == EXECUTION_INTERRUPTED`: `ticks_consumed == sum_of_segment_tick_lengths` for the segments that completed strictly before the boundary at which the predicate returned `True` (cumulative settled-boundary count; the interrupted segment contributes zero, because by D-EXEC-13 the predicate is consulted **at** boundaries, not during segment execution).
+
+`ticks_consumed` is **authoritative-evidence** per D-CONT-1 family and enters:
+
+* `TaskResult` (Phase 4A field, populated per this clause from Step 10 Phase 4 forward);
+* `task_result_fingerprint` (D-FAULT-10 canonical-JSON, `sort_keys=True`, stable across Python versions);
+* `NodeExecutionCompleted` event payload (via the fingerprint);
+* therefore the replay-identity byte-equality surface enforced by `tools/check_session_replay_identity.py` (D-FAULT-11a).
+
+Two replays of identical inputs MUST produce **bit-identical** `ticks_consumed` values. Divergence is a `REPLAY_INTEGRITY_FAILURE` per D-FAULT-11; the comparator surfaces it as a byte-level diff in `events.jsonl` without any new comparator-tool change.
+
+The following derivations of `ticks_consumed` are **FORBIDDEN**:
+
+* derivation from `time.time()`, `time.monotonic()`, `time.perf_counter()`, `datetime.now()`, or any duration-based wall-clock source;
+* derivation from a rate × duration calculation;
+* rounding or approximation ("≈ N ticks") under D-FAULT-11a;
+* derivation from PhysX-internal simulation-time queries (these are D-CONT-2 forbidden inputs as continuity authority);
+* substitution of `trajectory.declared_length_ticks` for actual settled-boundary count (the field is a counter, not a specification).
+
+`interrupted_at_segment_index` and `interrupted_at_segment_name` (D-FAULT-1b, D-EXEC-13b) are **observational** projections derivable from `ticks_consumed` plus the trajectory's static segment-tick map; they MUST NOT enter the fingerprint and MUST NOT be re-derived as inputs to `ticks_consumed`.
+
+*Rationale.* `ticks_consumed` is the load-bearing input to D-FAULT-3b's classification rule and the load-bearing field for D-FAULT-12 budget enforcement. It must be wall-clock-independent and bit-exact, or the entire interruption surface loses replay-authority. D-FAULT-12c closes the gap left by the Phase 4A executor (which today does not populate the field); Step 10 Phase 4 lands the runtime population, Step 10 Phase 7 the comparator-level confirmation.
+
+### 13.13 D-FAULT-13 — Infrastructure-degradation provenance
+
+**D-FAULT-13** — `INFRASTRUCTURE_DEGRADATION` is detected out-of-band (Kit subprocess exit, PhysX exception, simulation_app death). The session **MUST NOT** emit an infrastructure-degradation event (the session is dead by hypothesis). The launch harness **MUST** write a sidecar artifact at `<session_package>/infrastructure_degradation.json` with the schema:
+
+```json
+{
+  "schema_version": 1,
+  "detected_by": "launch_harness",
+  "detected_at_wall_ns": <int>,
+  "last_seen_seq": <int|null>,
+  "exit_signal": <str|null>,
+  "exit_code": <int|null>,
+  "reason": "<short str>"
+}
+```
+
+`detected_at_wall_ns` is the **only** legitimate wall-clock use in the entire system (the deterministic clock has stopped). The replay-identity comparator **MUST** treat sidecar presence as **REPLAY-INVALID** (a distinct verdict from "divergent" — explicitly unreplayable).
+
+### 13.14 D-FAULT-14 — No implicit secondary orchestration system
+
+**D-FAULT-14** — Failure handling **MUST NOT** become an implicit secondary orchestration system. Specifically:
+
+* every failure transition is one append to `events.jsonl`;
+* every state mutation on failure is justified by exactly one D-FAULT clause;
+* recovery is graph topology, never runtime behaviour (D-FAULT-8);
+* abort is envelope-driven, never method-driven (D-FAULT-9);
+* timeout is tick-budgeted, never wall-clock (D-FAULT-12);
+* infrastructure degradation is sidecar, never session-emitted (D-FAULT-13).
+
+A code path that "cleans up" on failure without an emitted event is a contract violation under this clause.
+
+### 13.15 D-FAULT-15 — Forbidden anti-patterns (failure-path scope)
+
+**D-FAULT-15** — In addition to D-FORBID-1..-14, the following patterns are **FORBIDDEN** in any code that participates in failure handling:
+
+| # | forbidden pattern | cites |
+|---|---|---|
+| 1 | implicit rollback of retained state on failure | D-FAULT-5 |
+| 2 | implicit retry without an explicit recovery node | D-FAULT-8, D-FAULT-8b |
+| 3 | "transient failure" or "soft failure" suppression | D-FAULT-13 (no warnings) |
+| 4 | "approximately equal" replay tolerance for failure traces | D-FAULT-11a |
+| 5 | **orchestration-observable** mid-Phase-E interrupt (abort, timeout, anything) — session-side interruption of the executor during `execute()`, session-side polling of executor state during `execute()`, or any session-observable mid-execute event | D-FAULT-6, D-FAULT-6a, D-EXEC-13a |
+| 6 | operator intervention bypassing the OperatorEnvelope schema | D-FAULT-9 |
+| 7 | failure-driven cleanup of D-LIFE state outside Phase G | D-FAULT-5, D-CONT-5a |
+| 8 | "recovery completed silently" without a `RecoveryNodeEntered` event | D-FAULT-8 |
+| 9 | cascade-skip emission iterating an unordered set | D-FAULT-4, D-SCHED-3 |
+| 10 | wall-clock timeout budget (per-tick or per-step) | D-FAULT-12, D-FAULT-12c |
+| 11 | failure trace mutation of a prior event | D-TRACE-2 (Step 9 explicitly cites) |
+| 12 | cross-session retained-state continuity for recovery | D-FORBID, D-FAULT-8 |
+| 13 | live-mutating `FailureAction` after `graph.build()` | D-FAULT-3a, D-SCHED-8 |
+| 14 | severity tiers ("warning", "minor failure", etc.) | D-FAULT-13 |
+| 15 | topology-derived recovery inference | D-FAULT-8a |
+| 16 | `ExecutionSession.request_abort()` or any method-as-ingress | D-FAULT-6, D-FAULT-9 |
+| 17 | inserting infrastructure-degradation events into `events.jsonl` | D-FAULT-13 |
+| 18 | `RECOVERING` as a `SessionState` value | D-FAULT-3 |
+| 19 | promoting `TaskOutcome.EXECUTION_INTERRUPTED` to a top-level D-FAULT-1 class | D-FAULT-1, D-FAULT-1b |
+| 20 | interruption predicate constructed outside `ExecutionSession` (in the executor, in trajectory authors, in external callers) | D-EXEC-13c, D-FAULT-2 |
+| 21 | interruption predicate consultation at a non-segment-boundary point (mid-step, mid-PhysX-command, between physics ticks of the same segment) | D-EXEC-13 condition 4 |
+| 22 | interruption predicate with side-effects, I/O, logging, mutation of captured state, wall-clock reads, random reads, or closure over PhysX state | D-EXEC-13, D-CONT-2 |
+| 23 | speculative interruption — continuing `execute()` past a predicate `True` return at a legal boundary | D-EXEC-13d |
+| 24 | wall-clock-derived `ticks_consumed` (any duration-based derivation, any rate × time calculation, any rounding) | D-FAULT-12c |
+| 25 | promotion of `interrupted_at_segment_*` forensic fields into the per-task fingerprint | D-EXEC-13b, D-FAULT-10 |
+| 26 | executor-side classification of interruption cause (executor inferring "this is an OPERATOR_ABORT" vs "this is a TIMEOUT_FAILURE" and reporting different outcomes) | D-FAULT-1b, D-FAULT-3b |
+| 27 | session-side mid-`execute()` envelope drain (Phase A drain interleaved with Phase E) | D-FAULT-6, D-EXEC-13a |
+| 28 | async cancellation channel, signal handler, thread-based interrupt, or any non-synchronous interruption mechanism into the executor | D-EXEC-13, §1.6 non-goals |
+| 29 | adaptive interruption (predicate mutating mid-`execute()`, predicate substitution, predicate composition by the executor) | D-EXEC-13c |
+| 30 | live-channel interruption ingress during `execute()` (envelopes arriving mid-execute and influencing the predicate) | D-EXEC-13 (closure captured at execute-entry only) — Step 11 territory |
+
+### 13.16 Step 9 scope restatement
+
+Step 9 is **not** about failure tolerance. The deliberately-failing 2-node test job is a validation vehicle for the failure-semantics contract, not a feature deliverable.
+
+Step 9 is proving:
+
+> **Deterministic failure semantics with contamination-resistant replay-authoritative failure traces, under explicit graph-topology recovery (D-FAULT-8), tick-budget timeout enforcement (D-FAULT-12), envelope-as-event abort ingress (D-FAULT-9), and contradiction-preserving retained-state posture (D-FAULT-5).**
+
+The load-bearing assertions are:
+
+1. Every failure class in D-FAULT-1 has exactly one origin authority (D-FAULT-2).
+2. Failure transitions never mutate retained state beyond what D-CONT-5 permits on PASS (D-FAULT-5, D-FAULT-5a, D-FAULT-5b).
+3. Abort enters only at Phase A; Phase E is atomic (D-FAULT-6, D-FAULT-6a, D-FAULT-12a).
+4. Cancellation is idempotent at the transition (D-FAULT-7).
+5. Recovery is graph topology, never runtime behaviour (D-FAULT-8, D-FAULT-8a, D-FAULT-8b, D-FAULT-14).
+6. Failure traces are byte-identical across multiple sessions that terminate at the same `(SessionState, seq, terminator_reason)` triple (D-FAULT-10, D-FAULT-11, D-FAULT-11a).
+7. The Phase 4A 32/32 regression surface and Step 8 D-CONT contamination tests remain preserved.
+
+If the deliberately-failing exercise passes but any of these load-bearing assertions does not hold, Step 9 has not landed.
+
+### 13.17 Step 10 Direction A scope extension  *(contract freeze + empirical validation closed 2026-05-21)*
+
+**Empirical validation status (2026-05-21):** Direction A is architecturally CLOSED. All four deferred-from-Step-9 scenarios (C/D/E/F) PASS on real Isaac Sim 5.0 PhysX with 12/12 cycles bytewise replay-identical under the validated `--reopen-stage-between-cycles` launcher isolation policy. The four clauses below (D-EXEC-13 a/b/c/d, D-FAULT-1b, D-FAULT-3b, D-FAULT-12c) passed under direct empirical pressure without weakening. See [`docs/phase_4b_step10_direction_a_analysis.md`](phase_4b_step10_direction_a_analysis.md) §P and [`docs/phase_4b_step10_p6_isaac_acceptance.md`](phase_4b_step10_p6_isaac_acceptance.md) §J/§K for closure record. The stage-reopen isolation requirement is a **launcher-level / test-infrastructure** policy for cross-cycle PhysX articulation-state isolation, NOT a contract limitation.
+
+Step 10 Direction A extends the deterministic failure semantics with **executor-internal interruption surfaces** without expanding orchestration authority. The five immovable substrate posture clauses are restated explicitly under Step 10:
+
+1. **Replay-authoritative truth.** `ticks_consumed` (D-FAULT-12c) is integer-counted, wall-clock-independent, and enters the per-task fingerprint (D-FAULT-10). `TaskOutcome.EXECUTION_INTERRUPTED` enters the fingerprint as a sub-classifier of `NODE_EXECUTION_FAILURE` (D-FAULT-1b). Observational forensics (`interrupted_at_segment_*`) do NOT enter the fingerprint (D-EXEC-13b).
+2. **D-FAULT-1 enumeration is immutable.** No new top-level failure class is introduced. `EXECUTION_INTERRUPTED` is mechanically neutral and is classified post-Phase-E into one of the existing eight D-FAULT-1 classes per D-FAULT-3b's declared-order rule.
+3. **Phase E remains atomic from the orchestration perspective.** D-FAULT-6a is preserved. The sub-Phase-E interruption surface is executor-internal (D-EXEC-13a) and invisible to D-EXEC-1..-12.
+4. **Phase-A-only abort ingress.** D-FAULT-6 stands. Envelopes drained at Phase A; `OperatorAbortRequested` for a deferred (eligible-but-undrained) envelope is emitted by the session at the post-Phase-E classification site per D-FAULT-3b, NOT by the executor.
+5. **Contradiction preservation on FAIL.** D-FAULT-5 / -5a / -5b stand; occupancy-mutation authority remains exclusively at Phase G on PASS (D-CONT-5). Mid-execute interrupt produces the same retained-state posture as full-execute FAIL: last-tick canonical truth, no occupancy mutation (D-CONT-5), no D-LIFE cleanup, no implicit rollback.
+
+The Step 10 Direction A contract surface comprises four normative clauses:
+
+| clause | scope | location |
+|---|---|---|
+| D-EXEC-13 (a–d) | sub-Phase-E interruption surface: segment boundaries, predicate purity, single-emitter discipline, no-speculation | §1.5 |
+| D-FAULT-1b | `EXECUTION_INTERRUPTED` as executor-reported neutral outcome | §13.1.2 |
+| D-FAULT-3b | session classification of `EXECUTION_INTERRUPTED` into orchestration-level class | §13.3.2 |
+| D-FAULT-12c | `ticks_consumed` ontology and replay-authority | §13.12.3 |
+
+Step 10 Direction A is **execution-adapter evolution only**: the orchestration substrate (D-CONT-1..-7a, D-FAULT-1..-15 modulo the additions above, D-EXEC-1..-12, D-SCHED, D-SESS, D-TRACE, D-BUS, D-REPLAY, D-FORBID, D-SCALE, D-CONF) is **frozen**. No D-FAULT clause is weakened; D-FAULT-15 row 5 is **strengthened** by an "orchestration-observable" qualification that makes the orchestration-observable interrupt prohibition more precise without admitting any new orchestration-observable surface. Twelve new D-FAULT-15 rows (19–30) explicitly enumerate Step 10-specific anti-patterns.
+
+Step 10 Direction A is **NOT**:
+
+* a new orchestration authority — the executor never gains mutation authority beyond PhysX scene;
+* a new event taxonomy — no new event types are added;
+* a new failure class — the D-FAULT-1 eight-class enumeration is unchanged;
+* a new envelope schema — D-FAULT-9 stands;
+* a recovery mechanism — D-FAULT-8 graph-explicit recovery remains the sole recovery path; Direction A only makes the deferred Step 9 scenarios C–F empirically reachable on PhysX;
+* a live-ingress channel — envelopes are captured by closure at `execute()` entry only (Step 11 territory for live ingress);
+* a pause/resume mechanism — D-FAULT-15 #18 forbids `RECOVERING`; Direction F (deferred indefinitely) addresses pause/resume separately;
+* a cross-cell mechanism — Direction C (deferred) territory.
+
+The load-bearing assertions Step 10 Direction A must satisfy at landing:
+
+1. Every `TaskResult` with `outcome == EXECUTION_INTERRUPTED` carries a non-negative integer `ticks_consumed` produced by counting `world.step()` invocations at their site (D-FAULT-12c).
+2. Every `EXECUTION_INTERRUPTED` return is classified by the session **before** Phase F/G into exactly one of `OPERATOR_ABORT` / `TIMEOUT_FAILURE` / `NODE_EXECUTION_FAILURE` per D-FAULT-3b's declared-order rule.
+3. The interruption predicate is constructed only by the session, is pure, and closes only over the D-EXEC-13 whitelist of authoritative state captured at `execute()` entry.
+4. The executor consults the predicate only at the segment boundaries enumerated by D-EXEC-13 conditions 1–5; per-step predicate consultation is FORBIDDEN.
+5. Phase E remains atomic from the orchestration perspective per D-FAULT-6a and D-EXEC-13a: no session-side mid-execute mutation, no mid-execute envelope drain, no mid-execute event emission, no mid-execute boundary snapshot.
+6. `EXECUTION_INTERRUPTED` (D-FAULT-1b) and `ticks_consumed` (D-FAULT-12c) enter the per-task fingerprint per D-FAULT-10; `interrupted_at_segment_*` do NOT enter the fingerprint per D-EXEC-13b; replay-identity byte-equality is preserved per D-FAULT-11a across multiple cycles of any deterministic interruption scenario.
+7. The Step 8 Phase 6 comparator (`tools/check_session_replay_identity.py`) requires no changes; replay-identity divergence of `ticks_consumed` or `EXECUTION_INTERRUPTED` surfaces as ordinary `events.jsonl` byte-level divergence.
+8. The Phase 4A 32/32 regression surface and the Step 8 + Step 9 D-CONT + D-FAULT regression suites remain preserved.
+
+If Step 10 Direction A lands but any of these load-bearing assertions does not hold, Step 10 Direction A has not landed.
+
+---
+
 **End of deterministic-semantics contract.**
 
-This document binds [docs/phase_4b_orchestration_architecture.md](phase_4b_orchestration_architecture.md) and every Phase 4B implementation step that follows. On adoption, the next architectural artifact is the step-1 implementation note for `EventBus` + event taxonomy, which **must** cite this contract for every dispatch / ordering / subscriber-topology choice it makes.
+This document binds [docs/phase_4b_orchestration_architecture.md](phase_4b_orchestration_architecture.md) and every Phase 4B implementation step that follows. On adoption, the next architectural artifact is the step-1 implementation note for `EventBus` + event taxonomy, which **must** cite this contract for every dispatch / ordering / subscriber-topology choice it makes. Sections §12 (D-CONT) and §13 (D-FAULT) extend the contract for inter-node continuity (Step 8) and deterministic failure semantics (Step 9) respectively; every subsequent step MUST cite both families for any cross-node or failure-path behaviour. Section §1.5 (D-EXEC-13 sub-Phase-E interruption surface) and the D-FAULT-1b / D-FAULT-3b / D-FAULT-12c clauses (Step 10 Direction A contract freeze, §13.17) extend the contract for deterministic executor interruption surfaces; every subsequent step that touches the executor MUST cite §1.5 and §13.17 for any segment-boundary, predicate-consumption, `ticks_consumed`, or `EXECUTION_INTERRUPTED` behaviour.

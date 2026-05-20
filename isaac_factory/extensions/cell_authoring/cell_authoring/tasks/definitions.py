@@ -128,9 +128,19 @@ class TaskDefinition:
     A TaskDefinition is *purely descriptive*. The executor reads it,
     plans the realisation (today: lookup-the-baked-IK-waypoint-list),
     and runs the trajectory.
+
+    Field classification per D-CONT-7a:
+      * ``tick_budget_ticks`` (Phase 4B Step 9 Phase 5, D-FAULT-12) —
+        deterministic per-task tick budget. ``None`` means no
+        enforcement (Phase 4A / Step 8 backward-compat default).
+        When set, ExecutionSession post-Phase-E checks
+        ``ticks_consumed > tick_budget_ticks`` and emits
+        ``TIMEOUT_FAILURE`` if exceeded. Wall-clock budgets are
+        FORBIDDEN per D-FAULT-12 / D-FAULT-15 #10.
     """
-    task_id:    str
-    task_kind:  str
+    task_id:           str
+    task_kind:         str
+    tick_budget_ticks: int | None = None
 
 
 @dataclass(frozen=True)
@@ -186,6 +196,15 @@ class TaskOutcome(enum.Enum):
     PEG_OUT_OF_BOUNDS               = "PEG_OUT_OF_BOUNDS"
     MOTION_QUALITY_VIOLATION        = "MOTION_QUALITY_VIOLATION"
     EXECUTOR_ERROR                  = "EXECUTOR_ERROR"
+    # Phase 4B Step 10 Direction A (D-FAULT-1b).
+    # Executor-reported, mechanically-neutral outcome indicating that
+    # ``execute()`` stopped at a deterministic segment boundary in
+    # response to a session-supplied interruption predicate (D-EXEC-13).
+    # Sub-classifier of NODE_EXECUTION_FAILURE per D-FAULT-1a; the
+    # session combines this outcome with envelope snapshot + tick
+    # budget to assign the orchestration-level failure class per
+    # D-FAULT-3b. MUST NOT be promoted to a top-level D-FAULT-1 class.
+    EXECUTION_INTERRUPTED           = "EXECUTION_INTERRUPTED"
 
 
 @dataclass
@@ -278,6 +297,44 @@ class TaskResult:
     wall_clock_s:          float = 0.0
     perturbation:          dict[str, Any] = field(default_factory=dict)
     registry_snapshot:     dict[str, Any] | None = None
+
+    # Phase 4B Step 9 Phase 5 — tick-budget accounting (D-FAULT-12).
+    # Number of ``world.step()`` invocations the executor performed.
+    # Authoritative-evidence: input to ExecutionSession's post-Phase-E
+    # tick-budget check. NOT a wall-clock measurement; tick-budget
+    # enforcement is exclusively per-``world.step()`` count
+    # (D-FAULT-12, D-FAULT-15 #10). Defaults to 0 for backward-compat
+    # with Phase 4A executors that have not yet been updated.
+    #
+    # Phase 4B Step 10 Direction A (D-FAULT-12c): authoritative under
+    # D-CONT-1; enters the per-task fingerprint (D-FAULT-10); wall-clock
+    # derivation is FORBIDDEN. For an EXECUTION_INTERRUPTED return,
+    # equals the cumulative ``world.step()`` count at the boundary at
+    # which the predicate returned True.
+    ticks_consumed:        int = 0
+
+    # Phase 4B Step 10 Direction A — observational interruption forensics
+    # (D-EXEC-13b).
+    #
+    # When ``outcome == TaskOutcome.EXECUTION_INTERRUPTED`` these fields
+    # record which named segment boundary the executor stopped at:
+    #
+    #   * ``interrupted_at_segment_index`` — 0-based index of the
+    #     boundary (0 = before any segment ran, N = after the Nth
+    #     segment completed).
+    #   * ``interrupted_at_segment_name`` — author-declared name of
+    #     that boundary (e.g. "grasp", "lift", "place", "release").
+    #
+    # **Observational, not authoritative.** Per D-EXEC-13b these fields
+    # MUST NOT enter the per-task fingerprint; they are derivable from
+    # ``ticks_consumed`` plus the trajectory's static segment-tick map,
+    # so duplicating them into the fingerprint would double-bind
+    # replay-identity to the same underlying fact (D-CONT-7a). They
+    # exist for operator forensics only.
+    #
+    # ``None`` for any outcome other than ``EXECUTION_INTERRUPTED``.
+    interrupted_at_segment_index: int | None = None
+    interrupted_at_segment_name:  str | None = None
 
     @property
     def passed(self) -> bool:

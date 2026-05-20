@@ -93,13 +93,21 @@ from .package import canonical_dumps
 # ───────────────────────── version / kind constants ─────────────────────────
 
 
-BOUNDARY_SNAPSHOT_SCHEMA_VERSION: int = 1
+BOUNDARY_SNAPSHOT_SCHEMA_VERSION: int = 2
 """Canonical boundary-snapshot schema version (D-CONT-6b).
 
 Version history:
   1 — initial schema (Phase 4B Step 8 / Phase 3): objects (pose_m + yaw_rad),
       fixtures (occupied_by), session (completed + failed + retry_counts),
       envelope (schema_version + kind + node_id + seq).
+  2 — Phase 4B Step 9 Phase 5 (D-FAULT-4a): session block extended with
+      ``skipped`` (cascade-skipped node_ids, D-FAULT-4) alongside the
+      existing completed / failed / retry_counts. Backward-compatible at
+      the API surface: ``boundary_snapshot()`` accepts ``session_skipped``
+      with a default of ``frozenset()`` so existing callers that have not
+      yet been updated continue to function. The on-disk schema version
+      is 2 in all cases; replay against a stored ``schema_version == 1``
+      snapshot is refused per D-CONT-6b.
 
 Any addition, removal, rename, or semantic change to the snapshot
 allowlist requires a version bump. Downstream comparators that read a
@@ -160,6 +168,7 @@ def boundary_snapshot(
     session_completed:    AbstractSet[str],
     session_failed:       AbstractSet[str],
     session_retry_counts: Mapping[str, int],
+    session_skipped:      AbstractSet[str] = frozenset(),
     schema_version:       int = BOUNDARY_SNAPSHOT_SCHEMA_VERSION,
 ) -> dict[str, Any]:
     """Project authoritative continuity state to a canonical-JSON dict.
@@ -278,6 +287,7 @@ def boundary_snapshot(
             [nid, int(session_retry_counts[nid])]
             for nid in sorted(session_retry_counts.keys())
         ],
+        "skipped":      sorted(session_skipped),   # D-FAULT-4a (schema_version=2)
     }
 
     return {
