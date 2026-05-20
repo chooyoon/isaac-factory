@@ -164,6 +164,14 @@ from .scheduler import (
     SchedulerEvaluationError,
     TopologicalSequentialScheduler,
 )
+from .snapshot import (
+    BOUNDARY_SNAPSHOT_KIND_POST_NODE,
+    BOUNDARY_SNAPSHOT_KIND_PRE_NODE,
+    BOUNDARY_SNAPSHOT_KIND_SESSION_INITIAL,
+    BOUNDARY_SNAPSHOT_SCHEMA_VERSION,
+    boundary_snapshot,
+    boundary_snapshot_hash,
+)
 from .trace import DurableTraceRecorder
 
 
@@ -194,6 +202,13 @@ EVENT_SESSION_FAILED:           str = "SessionFailed"
 # D-CONT-5. Never emitted from the executor, the validator, the
 # scheduler, or any subordinate component.
 EVENT_FIXTURE_STATE_CHANGED:    str = "FixtureStateChanged"
+# Phase 4B Step 8 / Phase 3 — replay-authoritative boundary snapshot
+# emissions. One per checkpoint kind per node-tick (plus one at
+# session_initial). Cites D-EXEC-10, D-EXEC-11, D-CONT-6.
+# Event payload is minimal (kind + node_id + seq + canonical_hash +
+# schema_version) — the full snapshot body lives in the trace via the
+# replay tool's snapshot-store, never inside the event.
+EVENT_NODE_BOUNDARY_SNAPSHOT:   str = "NodeBoundarySnapshot"
 
 
 # Per-node runtime statuses — stable strings used in fingerprints.
@@ -553,6 +568,16 @@ class ExecutionSession:
         self._task_executor.prepare()
         self._task_executor.reset(scope=ResetScope.FULL)
 
+        # 5b. Phase 4B Step 8 / Phase 3 — session_initial boundary
+        # snapshot (D-EXEC-11). Captures the authoritative continuity
+        # state immediately before the first orchestration tick, after
+        # the executor has populated the registry via prepare() +
+        # FULL reset.
+        self._emit_boundary_snapshot(
+            kind=BOUNDARY_SNAPSHOT_KIND_SESSION_INITIAL,
+            node_id=None,
+        )
+
         # 6. Transition.
         self._session_state = SessionState.RUNNING
 
@@ -623,9 +648,16 @@ class ExecutionSession:
                                                     # resets are not exercised here.
         })
 
-        # 5. Pre-execution snapshot is captured implicitly via the
-        #    trace commits above + the snapshot below if observers want
-        #    it. We do not write a separate registry snapshot in step 6.
+        # 5. Phase 4B Step 8 / Phase 3 — pre_node boundary snapshot
+        # (D-EXEC-10 item 1, "end of Phase C, before any command is
+        # issued"). Authoritative-continuity projection only
+        # (D-CONT-6). The trace commit at this point becomes the
+        # canonical-hash anchor that pre-tick replay-identity
+        # comparison keys on.
+        self._emit_boundary_snapshot(
+            kind=BOUNDARY_SNAPSHOT_KIND_PRE_NODE,
+            node_id=node_id,
+        )
 
         # 6. TaskExecutor.execute(...). Phase 4A's execute() runs
         #    UnifiedValidator internally and returns a fully-validated
@@ -656,6 +688,18 @@ class ExecutionSession:
         # D-CONT-5a, D-LIFE-6, D-LIFE-7.
         if passed:
             self._commit_phase_g_occupancy(task, node_id, result)
+
+        # 7d. Phase 4B Step 8 / Phase 3 — post_node boundary snapshot
+        # (D-EXEC-10 items 2+3 collapsed to one checkpoint in Step 6's
+        # bundled-phase model). Taken AFTER the Phase-G occupancy
+        # commit so the fixture-state mutation is captured in the
+        # authoritative projection. Trace commit follows the action
+        # (D-EXEC-7). The closing NodeExecutionCompleted event is
+        # next; its seq strictly follows this snapshot's seq.
+        self._emit_boundary_snapshot(
+            kind=BOUNDARY_SNAPSHOT_KIND_POST_NODE,
+            node_id=node_id,
+        )
 
         # 8. Emit NodeExecutionCompleted.
         self._emit(EVENT_NODE_EXECUTION_COMPLETED, payload={
@@ -720,6 +764,60 @@ class ExecutionSession:
         return self.snapshot()
 
     # ─────────── helpers ───────────
+
+    def _emit_boundary_snapshot(self, *, kind: str, node_id: str | None) -> None:
+        """Construct and emit one D-CONT-6 boundary snapshot.
+
+        Cites D-CONT-6, D-CONT-6c (purity), D-EXEC-7 (trace commit
+        follows the action), D-EXEC-10/-11 (checkpoint placement).
+
+        The full snapshot dict is **not** placed on the event payload
+        — it lives in a dedicated artifact store (Step-8 Phase 4+).
+        The event carries the minimal identity tuple:
+
+          * ``snapshot_kind``    — one of the three D-EXEC kinds
+          * ``node_id``          — None for session_initial
+          * ``snapshot_seq``     — same as the envelope's seq; redundant
+                                   but explicit for downstream tooling
+          * ``canonical_hash``   — SHA-256 of the canonical-JSON encoding
+          * ``schema_version``   — D-CONT-6b
+
+        Forgiving on missing registry: a ``task_executor`` without a
+        ``.registry`` attribute (test-fake) yields a snapshot built
+        from empty mappings. The event still emits; the hash is the
+        hash of an empty-cell snapshot at this seq.
+        """
+        registry = getattr(self._task_executor, "registry", None)
+        if registry is not None:
+            objects  = registry.objects
+            fixtures = registry.fixtures
+        else:
+            objects  = {}
+            fixtures = {}
+
+        # The seq the snapshot will be associated with is the bus's
+        # next-to-commit seq (current committed_count).
+        snapshot_seq = self._event_bus.committed_count
+
+        snap = boundary_snapshot(
+            kind=kind,
+            node_id=node_id,
+            seq=snapshot_seq,
+            objects=objects,
+            fixtures=fixtures,
+            session_completed=self._completed,
+            session_failed=self._failed,
+            session_retry_counts=self._retry_counts,
+        )
+        canonical_hash = boundary_snapshot_hash(snap)
+
+        self._emit(EVENT_NODE_BOUNDARY_SNAPSHOT, payload={
+            "snapshot_kind":   kind,
+            "node_id":         node_id,
+            "snapshot_seq":    snapshot_seq,
+            "canonical_hash":  canonical_hash,
+            "schema_version":  BOUNDARY_SNAPSHOT_SCHEMA_VERSION,
+        })
 
     def _commit_phase_g_occupancy(
         self, task: Any, node_id: str, result: Any,

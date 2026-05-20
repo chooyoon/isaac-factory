@@ -409,6 +409,11 @@ class TestEventOrderingPhaseG:
     """D-EXEC-2 / D-EXEC-7 — phase-correct event ordering."""
 
     def test_full_event_sequence_for_passing_pickplace(self):
+        # Phase 4B Step 8 / Phase 3 — sequence now includes three
+        # NodeBoundarySnapshot events (session_initial at begin(),
+        # pre_node before execute, post_node after Phase-G mutations).
+        # Cites D-EXEC-10, D-EXEC-11, D-CONT-6.
+        from cell_authoring.orchestration import EVENT_NODE_BOUNDARY_SNAPSHOT
         task = _pick_place_task(place_fixture_id="FixtureB")
         result = _FakeResult(
             passed=True, outcome=_FakeOutcome("PASS"),
@@ -417,13 +422,16 @@ class TestEventOrderingPhaseG:
         session, _bus, _ex, rec = _session(task=task, result=result)
         session.begin(); session.step(); session.complete()
         kinds = [e.event_type for e in rec.events]
-        # Required order (single-node, single place-fixture transition).
+        # Required order (single-node, single place-fixture transition):
         expected = [
             EVENT_SESSION_STARTED,
+            EVENT_NODE_BOUNDARY_SNAPSHOT,    # session_initial (D-EXEC-11)
             EVENT_NODE_SELECTED,
             EVENT_NODE_EXECUTION_STARTED,
-            EVENT_FIXTURE_STATE_CHANGED,    # Phase G mutation trace.
-            EVENT_NODE_EXECUTION_COMPLETED, # Closing event of the tick.
+            EVENT_NODE_BOUNDARY_SNAPSHOT,    # pre_node (D-EXEC-10 item 1)
+            EVENT_FIXTURE_STATE_CHANGED,     # Phase G mutation trace (D-CONT-5)
+            EVENT_NODE_BOUNDARY_SNAPSHOT,    # post_node (D-EXEC-10 items 2+3)
+            EVENT_NODE_EXECUTION_COMPLETED,  # Closing event of the tick
             EVENT_SESSION_COMPLETED,
         ]
         assert kinds == expected

@@ -312,6 +312,11 @@ class TestExecutionTickOrdering:
     commit follows the action that emits them."""
 
     def test_event_sequence_for_one_node_pass(self):
+        # Phase 4B Step 8 / Phase 3 — sequence now includes three
+        # NodeBoundarySnapshot events (session_initial at begin(),
+        # pre_node at end-of-Phase-C, post_node at end-of-Phase-G).
+        # Cites D-EXEC-10, D-EXEC-11, D-CONT-6.
+        from cell_authoring.orchestration import EVENT_NODE_BOUNDARY_SNAPSHOT
         s, bus, _ = _build_session()
         recorder = _capture_recorder(bus)
         s.begin()
@@ -319,19 +324,23 @@ class TestExecutionTickOrdering:
         s.complete()
         assert recorder.event_types() == [
             EVENT_SESSION_STARTED,
+            EVENT_NODE_BOUNDARY_SNAPSHOT,    # session_initial
             EVENT_NODE_SELECTED,
             EVENT_NODE_EXECUTION_STARTED,
+            EVENT_NODE_BOUNDARY_SNAPSHOT,    # pre_node
+            EVENT_NODE_BOUNDARY_SNAPSHOT,    # post_node
             EVENT_NODE_EXECUTION_COMPLETED,
             EVENT_SESSION_COMPLETED,
         ]
 
     def test_event_seqs_are_monotone_gap_free(self):
+        # Expanded for Phase 3: 8 events (5 prior + 3 boundary snapshots).
         s, bus, _ = _build_session()
         recorder = _capture_recorder(bus)
         s.begin()
         s.step()
         s.complete()
-        assert recorder.seqs() == [0, 1, 2, 3, 4]
+        assert recorder.seqs() == list(range(8))
 
     def test_executor_call_order_within_step(self):
         s, _, ex = _build_session()
@@ -577,8 +586,11 @@ class TestReplayReproducibility:
         log_a = _run()
         log_b = _run()
         assert log_a == log_b
-        # All five expected events.
-        assert len(log_a) == 5
+        # Phase 4B Step 8 / Phase 3 — 8 expected events:
+        # SessionStarted, session_initial-snapshot, NodeSelected,
+        # NodeExecutionStarted, pre_node-snapshot, post_node-snapshot,
+        # NodeExecutionCompleted, SessionCompleted.
+        assert len(log_a) == 8
 
     def test_durable_trace_byte_identical_across_runs(self, tmp_path):
         """Two independent ExecutionSessions wired through
@@ -619,7 +631,10 @@ class TestReplayReproducibility:
         assert snap2.event_count == bus.committed_count
         s.complete()
         snap3 = s.snapshot()
-        assert snap3.event_count == bus.committed_count == 5  # five events total
+        # Phase 4B Step 8 / Phase 3 — 8 events total (added three
+        # NodeBoundarySnapshot emissions: session_initial, pre_node,
+        # post_node).
+        assert snap3.event_count == bus.committed_count == 8
 
 
 # ─────────────────────── empty-graph edge case ───────────────────────

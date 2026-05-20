@@ -189,6 +189,7 @@ from .scheduler import (
 )
 from .session import (
     EVENT_FIXTURE_STATE_CHANGED,
+    EVENT_NODE_BOUNDARY_SNAPSHOT,
     EVENT_NODE_EXECUTION_COMPLETED,
     EVENT_NODE_EXECUTION_STARTED,
     EVENT_NODE_SELECTED,
@@ -207,6 +208,16 @@ from .session import (
     SessionRuntimeSnapshot,
     SessionState,
     TaskExecutorLike,
+)
+from .snapshot import (
+    BOUNDARY_SNAPSHOT_KIND_POST_NODE,
+    BOUNDARY_SNAPSHOT_KIND_PRE_NODE,
+    BOUNDARY_SNAPSHOT_KIND_SESSION_INITIAL,
+    BOUNDARY_SNAPSHOT_SCHEMA_VERSION,
+    BoundarySnapshotError,
+    boundary_snapshot,
+    boundary_snapshot_canonical_json,
+    boundary_snapshot_hash,
 )
 from ..tasks.executor import ResetScope
 from .trace import (
@@ -305,5 +316,15 @@ __all__ = [
     "EVENT_SESSION_COMPLETED",
     "EVENT_SESSION_FAILED",
     "EVENT_FIXTURE_STATE_CHANGED",
+    "EVENT_NODE_BOUNDARY_SNAPSHOT",
+    # Phase 4B Step 8 / Phase 3 — boundary snapshot projector.
+    "BOUNDARY_SNAPSHOT_SCHEMA_VERSION",
+    "BOUNDARY_SNAPSHOT_KIND_SESSION_INITIAL",
+    "BOUNDARY_SNAPSHOT_KIND_PRE_NODE",
+    "BOUNDARY_SNAPSHOT_KIND_POST_NODE",
+    "boundary_snapshot",
+    "boundary_snapshot_canonical_json",
+    "boundary_snapshot_hash",
+    "BoundarySnapshotError",
     "ResetScope",   # re-export from cell_authoring.tasks (step-6 additive)
 ]
