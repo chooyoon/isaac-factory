@@ -1,0 +1,46 @@
+phase: 4B Step 8 Phase 5
+joint_names:
+- shoulder_pan
+- shoulder_lift
+- elbow
+- wrist_1
+- wrist_2
+- wrist_3
+tool_offset_m: 0.0
+robot_base_world_m:
+- 0.0
+- 0.0
+- 0.8
+ik_solver: lula
+fixture_b_world_m:
+- 0.65
+- 0.4
+- 0.65
+waypoints:
+  approach_fixtureB:
+    joints_rad:
+    - 3.632361212848092
+    - -2.205013422414621
+    - -1.7305462320341392
+    - -3.917530875940433
+    - -1.5716337298490142
+    - 5.201859911856104
+    loss: 0.0
+  place_fixtureB:
+    joints_rad:
+    - 3.6327783391512423
+    - -2.5124947559250512
+    - -1.7112011870134243
+    - -3.6300850719779794
+    - -1.5693357289025442
+    - 5.204172336372876
+    loss: 0.0
+  retract_fixtureB:
+    joints_rad:
+    - 3.632361212848092
+    - -2.205013422414621
+    - -1.7305462320341392
+    - -3.917530875940433
+    - -1.5716337298490142
+    - 5.201859911856104
+    loss: 0.0
