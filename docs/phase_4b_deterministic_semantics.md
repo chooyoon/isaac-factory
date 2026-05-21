@@ -1128,6 +1128,16 @@ Specifically:
 
 **D-FAULT-6a** — Phase E is **atomic** from the orchestration perspective. The executor runs its declared trajectory to completion (or to executor-internal exception). The session does not interrupt mid-step on budget exhaustion, abort request, or any other condition. Mid-step interrupt would break D-EXEC-2 (no event out of phase) and D-CONT-3 (boundary quiescence).
 
+#### 13.6.2 D-FAULT-6b — N-Interior-Phase-E Ingress Cannot Acquire In-Tick Authority
+
+**D-FAULT-6b** — Within a single orchestration tick `K_N` executing node `N`'s Phase D–E, an `OperatorEnvelope` whose channel-arrival wall-clock instant lies strictly inside (start of `N`'s Phase D execute-entry, end of `N`'s Phase E) MUST NOT influence `N`'s interruption predicate, MUST NOT be drained mid-Phase-E, and MUST NOT terminate `N`'s `execute()` via any orchestration-observable mechanism. The earliest `orchestration_tick` at which such an envelope MAY acquire orchestration authority is `K_N + 1` (Phase A of the next `session.step`).
+
+**Citations.**
+* Anchor: D-FAULT-6, D-EXEC-13a, D-EXEC-13c, D-FAULT-15 row 27
+* Reference: D-FAULT-15 row 5
+
+*Note.* This clause asserts framework Theorem T2 (N2-only-Interruption Impossibility) per `docs/phase_4b_step11_admissibility_framework.md` §B.2. The embedded T1 explanation (Tick Non-Commensurability) is a separate C-2 note authored in Wave 6; it provides the wall-clock-to-orchestration-tick non-commensurability reasoning that underlies this clause's "earliest authority = `K_N + 1`" assertion. T2 is normative-strengthening (making implicit D-FAULT-6 + D-EXEC-13a + D-EXEC-13c + D-FAULT-15 row 27 discipline explicit), not normative-additive.
+
 ### 13.7 D-FAULT-7 — Idempotent cancellation
 
 **D-FAULT-7** — Cancellation is idempotent at the **transition**, not the envelope:
