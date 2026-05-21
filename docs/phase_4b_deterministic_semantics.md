@@ -1228,6 +1228,24 @@ Envelopes are passed to `ExecutionSession.__init__` via `pending_operator_envelo
 
 **D-FAULT-9a** — In Step 9, the only permitted `OperatorEnvelope.kind` value is `"abort"`. Other kinds (`pause`, `resume`, `manual_advance`) are reserved for Step 11; an envelope with an unrecognized kind **MUST** be rejected at session construction with `ExecutionSessionError`.
 
+#### 13.9.2 D-FAULT-9b — PAUSED Constitutional Admissibility
+
+**D-FAULT-9b** — A `SessionState` value `PAUSED` is constitutionally admissible IF AND ONLY IF all five of the following properties hold conjunctively:
+
+1. **Phase-A-governed transitions.** Both transitions into and out of `PAUSED` (`RUNNING` → `PAUSED` via `pause` envelope; `PAUSED` → `RUNNING` via `resume` envelope; `PAUSED` → `ABORTING` via `abort` envelope) **MUST** occur exclusively at Phase A drain. No other phase, and no other authority, **MAY** transition into or out of `PAUSED`.
+2. **Phase B–G structural skip.** During `PAUSED`, each `session.step()` invocation runs Phase A normally and structurally **MUST** skip Phases B through G. No scheduler call, no predicate construction, no executor invocation, no boundary snapshot, no registry mutation, and no Phase G commit **MAY** occur.
+3. **`orchestration_tick` continuity.** `_orchestration_tick` **MUST** advance by exactly 1 at the end of every `session.step()` invocation regardless of `session_state`, including during `PAUSED`. `PAUSED` **MUST NOT** freeze, gate, or otherwise interfere with tick advancement.
+4. **No wall-clock observation.** The substrate **MUST** make zero wall-clock observations during `PAUSED`. The wall-clock duration of any `PAUSED` interval **MUST** be determined entirely by the caller's cadence in invoking `session.step()` (per D-INGRESS-9).
+5. **Single-emitter discipline preserved.** Only `ExecutionSession.step()`, processing a drained envelope at Phase A, **MAY** transition into or out of `PAUSED`. No method-as-ingress, no callback, no timer, and no second-emitter pathway **MAY** introduce or remove `PAUSED`.
+
+Admittance of `PAUSED` without ALL of properties 1–5 holding conjunctively is **FORBIDDEN**.
+
+**Citations.**
+* Anchor: D-FAULT-6c, D-INGRESS-9, D-FAULT-6a, D-FAULT-2, D-FAULT-9
+* Reference: D-FAULT-15 row 18, D-FAULT-7
+
+*Note.* This clause asserts framework Theorem T6 (PAUSED Constitutional Admissibility) per `docs/phase_4b_step11_f58_paused_analysis.md` §M.1. T6's five conjunctive properties jointly close framework Threat 7 (PAUSED-as-wall-clock-wait) per F58 §O. The clause depends on existing-clause anchors: D-FAULT-6c (Phase-A-only ingress observation surface, Wave 1) bounds the property 1 transition surface; D-INGRESS-9 (Caller-Driven PAUSED Cadence, Wave 2) provides the property 4 caller-cadence discipline (D-INGRESS-9 itself becomes binding upon this clause's admission of `PAUSED`); D-FAULT-6a (Phase E atomicity) is preserved by property 2's structural skip; D-FAULT-2 (single-origin authority) is preserved by property 5's single-emitter discipline; D-FAULT-9 (envelope schema) provides the `pause` / `resume` envelope kinds enumerated in property 1. D-FAULT-9b is normative-strengthening (making explicit the conjunctive five-property admissibility surface that the cited anchors jointly imply); it is not normative-additive — it introduces no new authority surface, no new wall-clock observation pathway, no autonomous progression mechanism, no scheduler-state widening, and no replay-nondeterminism. The reference to D-FAULT-15 row 18 (`RECOVERING` as a `SessionState` value FORBIDDEN) provides the SessionState-additions discipline context; D-FAULT-7 (idempotent cancellation) provides the existing transition-not-envelope idempotency context that T6's property 1 inherits for the `pause` / `resume` / `abort` transition idempotency surface.
+
 ### 13.10 D-FAULT-10 — Failure-event canonical-JSON fingerprinting
 
 **D-FAULT-10** — Every failure-related event (`NodeExecutionCompleted` with `passed=False`, `NodeBlocked`, `TaskCascadeSkipped`, `NodeTimeoutTripped`, `AuthorityViolationDetected`, `ContinuityValidationFailed`, `OperatorAbortRequested`, `SessionAborting`, `SessionAborted`, `SessionFailed`, `RecoveryNodeEntered`) **MUST** be canonical-JSON serialized via `canonical_dumps` (D-TRACE-8). Float fields in failure payloads (e.g. evidence in `TaskOutcome` sub-classification) **MUST** originate from a deterministic PhysX read or deterministic arithmetic on PhysX reads; computed intermediates that introduce float-repr instability are **FORBIDDEN**.
