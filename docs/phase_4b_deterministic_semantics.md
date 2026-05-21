@@ -336,6 +336,17 @@ When all the above hold, L3 holds byte-for-byte (modulo `wall_ns`) and L4 holds 
 
 **D-REPLAY-9** — The session manifest **must** record subscriber identities (stable type names and constructor argument hashes, where available). L3 replay comparison requires identical subscriber sets; mismatched subscriber sets are compared at L4 only.
 
+### 4.5 D-REPLAY-10 — Scheduled-Injection Replay Primitive
+
+**D-REPLAY-10** — A replay tool **MAY** reconstruct a session's `pending_operator_envelopes` content from the authoritative trace via a **scheduled-injection** primitive: for each `OperatorAbortRequested` / `OperatorPauseRequested` / `OperatorResumeRequested` event, reconstruct an `OperatorEnvelope` from payload `(kind, requested_at_tick, reason)` with `envelope_id` content-addressed per D-FAULT-9; associate each envelope with the event's `ts_step` as its scheduled drain tick; at each Phase A, inject envelopes whose scheduled drain tick equals the current `orchestration_tick` into `_pending_envelopes` before the canonical-order drain. The pre-queue primitive (envelopes passed to `pending_operator_envelopes` at `session.begin()`) is the special case where each envelope's scheduled drain tick equals its `requested_at_tick`.
+
+Scheduled-injection is a **replay-tool reconstruction algorithm**, not a substrate-runtime obligation. The production `ExecutionSession` is unchanged: production envelope intake remains live channel pull and pre-queue per the existing D-FAULT-9 contract.
+
+**Citations.**
+* Anchor: D-REPLAY-1, D-REPLAY-2, D-TRACE-2, D-FAULT-9
+
+*Note.* This clause asserts framework refinement R1 to Lemma L4 (Replay-Reconstruction From Trace Alone) per `docs/phase_4b_step11_admissibility_framework.md` §C.4 and `docs/phase_4b_step11_f58_paused_analysis.md` §J.2. R1 extends L4's reconstruction primitive from "pre-queue only" to "scheduled-injection," resolving the late-arrival case where an envelope's Phase A drain tick differs from its `requested_at_tick`. D-REPLAY-10 is normative-strengthening (making explicit the replay-tool reconstruction primitive that the trace + D-FAULT-9 content-addressing already enable), not normative-additive — it introduces no new production-runtime semantics, no new ingress surfaces, and no new authority quanta; `orchestration_tick` remains the authority quantum (D-SCHED-11 preserved); transport-independence (framework Theorem T5) is preserved (the replay tool reads only the trace). The extraction plan §4.2 row 6 reference to "L4 framework label" is materialized in this Note section to preserve V9 framework-ref confinement; the Citations Reference subsection is intentionally omitted to avoid V17 ambiguity with the contract's local "L4" label (§4.1 Semantic Validation Identity layer, an unrelated concept).
+
 ---
 
 ## 5. ExecutionSession Authority Boundary  *(D-SESS)*
