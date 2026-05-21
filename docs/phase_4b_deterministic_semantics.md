@@ -164,6 +164,20 @@ The executor consumes the predicate as an opaque callable: it MUST NOT introspec
 * Sub-segment interruption ("interrupt 30% of the way through grasp"). Interruption eligibility exists only at the boundaries D-EXEC-13 enumerates.
 * Async cancellation, signal-driven interruption, or thread-based interruption. The predicate is synchronously consulted by the executor in the same thread as `world.step()`.
 
+### 1.7 Framework Theorem T1 — Tick Non-Commensurability (embedded note)
+
+Within one `ExecutionSession`, two clocks advance independently and are non-commensurable from each other's reference frame:
+
+* `orchestration_tick` — advances by exactly 1 at the end of each `session.step()` invocation (after Phase G); session-owned (D-SESS-1); observable to every phase of the orchestration tick.
+* `world.step()` count — advances by exactly 1 per `world.step()` call inside Phase E (D-EXEC-4); executor-owned; not observable to any orchestration phase outside Phase E.
+
+During Phase E of `session.step(K)`, `orchestration_tick = K` (frozen for the duration; D-EXEC-13a). Inside that interval, the executor advances its own world-step counter; the session has no observation surface for that counter until Phase E returns (D-FAULT-6a). The wall-clock instant at which any external event (e.g., an `OperatorEnvelope` arrival) occurs is therefore non-commensurable with `orchestration_tick`: a single wall-clock instant projects to a unique `orchestration_tick` value `K`, and the earliest orchestration-observable authority surface for any consequence of that instant is at Phase A of `session.step(K + 1)`.
+
+**Citations.**
+* Anchor: D-EXEC-1, D-EXEC-4, D-EXEC-13a, D-FAULT-6a, D-SESS-1
+
+*Note.* This embedded explanatory note paraphrases framework Theorem T1 (Tick Non-Commensurability) per `docs/phase_4b_step11_admissibility_framework.md` §B.1. T1 is derivable from the citation set above (per framework §B.1 hypotheses); no new normative content is introduced. The note materializes the wall-clock-to-`orchestration_tick` non-commensurability reasoning that D-FAULT-6b's Note (§13.6.2; "embedded T1 explanation (Tick Non-Commensurability) is a separate C-2 note authored in Wave 6") + D-FAULT-6c's Note (§13.6.3; "framework Theorem T1 (Tick Non-Commensurability) provides the wall-clock-to-orchestration-tick non-commensurability reasoning") forward-reference. T1 is **normative-implicit** per framework §B.1 classification (load-bearing premise for Theorems T2 + T3); the embedded form codifies T1's reasoning without introducing a new clause. No new authority surface, no replay-identity widening, no ingress widening, no scheduler widening. V9 framework-label confinement preserved (framework labels "T1" / "T2" / "T3" appear only in this Note section).
+
 ---
 
 ## 2. Scheduler Determinism Contract  *(D-SCHED)*
