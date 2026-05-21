@@ -1397,6 +1397,7 @@ A code path that "cleans up" on failure without an emitted event is a contract v
 | 32 | sub-tick channel pull (pulls at Phase B/C/D/E/F/G) | D-EXEC-1, D-EXEC-2 |
 | 33 | mid-Phase-E channel pull (any read of channel state during `executor.execute()`) | D-FAULT-15 #5, #27, D-EXEC-13a |
 | 34 | wall-clock arrival timestamp as authoritative field on `OperatorEnvelope` | D-FORBID-6, D-FAULT-15 #10, #22 |
+| 35 | transport-layer ordering authority over canonical drain order | D-SCHED-1, D-SCHED-5, D-SCHED-6, D-SCHED-7 |
 
 ### 13.16 Step 9 scope restatement
 
