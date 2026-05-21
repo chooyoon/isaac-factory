@@ -33,6 +33,7 @@ The contract is **architecture-level**: it constrains semantics, not signatures.
 | **OperatorEnvelope** | Frozen dataclass per D-FAULT-9; sole orchestration ingress unit; content-addressed `envelope_id`. |
 | **Channel** | Per-session passive store of OperatorEnvelopes pushed by transport; observed only by session at Phase A pull (D-INGRESS-1, D-INGRESS-2). |
 | **Pull** | Atomic snapshot operation at start of Phase A by which the session captures the channel's current buffer (D-INGRESS-2, D-INGRESS-3). |
+| **Drain Epoch** | The (`session_id`, `orchestration_tick`) pair at which a Phase A drain processed an envelope. Authoritative-observation primitive (T3, L1). |
 
 ---
 
