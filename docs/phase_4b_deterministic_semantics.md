@@ -661,7 +661,7 @@ Forbidden future scaling axes:
 
 The following are recognized gaps that future revisions will need to address. Listing them here marks them as *known-unspecified*, not *forgotten*:
 
-1. **`OperatorOverride` event commutativity.** The contract specifies operator commands enter only at Phase A; it does not yet specify whether two operator commands in the same Phase A drain are processed in arrival order or in a canonical order. Phase 4B step 11 will close this gap.
+1. **`OperatorOverride` event commutativity.** The contract specifies operator commands enter only at Phase A; it does not yet specify whether two operator commands in the same Phase A drain are processed in arrival order or in a canonical order. Phase 4B step 11 will close this gap. **CLOSED** (see L3, D-INGRESS-4)
 2. **Diagnostic-event filtering.** D-TRACE-5 says diagnostic records live outside the authoritative path. It does not specify the exact directory layout. The implementation step that lands diagnostic trace plumbing will pin it.
 3. **Cross-cell replay identity.** Out of scope here; deferred to a hypothetical Phase 5+ cross-cell contract.
 4. **Failure-action determinism under nested cascades.** Pinned in §13 D-FAULT (D-FAULT-3, D-FAULT-3a, D-FAULT-4, D-FAULT-7) — sibling-tolerant default with explicit `FailureAction.ABORT_COHORT` / `ABORT_JOB` escalation; cascade emission iterates `graph.canonical_order`; emission is idempotent at the transition.
