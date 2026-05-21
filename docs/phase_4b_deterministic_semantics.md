@@ -1403,6 +1403,7 @@ A code path that "cleans up" on failure without an emitted event is a contract v
 | 38 | wall-clock blocking in `PAUSED` state (`session.step` blocks on resume arrival) | D-FORBID-11 |
 | 39 | `manual_advance` envelope as scheduler override | D-SCHED-1, D-SCHED-3 |
 | 40 | live-channel observation of session state (`session.session_state`, `session._completed`, etc. — read by the channel for routing decisions) | D-SESS-1, D-SESS-5 |
+| 41 | retroactive ingress event editing (modifying a previously emitted `OperatorAbortRequested` event) | D-TRACE-2 |
 
 ### 13.16 Step 9 scope restatement
 
