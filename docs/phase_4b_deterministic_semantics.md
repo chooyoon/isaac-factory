@@ -1433,6 +1433,113 @@ If Step 10 Direction A lands but any of these load-bearing assertions does not h
 
 ---
 
+## 14. Live Ingress Admissibility Contract  *(D-INGRESS)*
+
+### 14.1 Scope
+
+This section codifies the constitutional admissibility surface for **live operator ingress**: the channel-based pathway by which `OperatorEnvelope` instances (D-FAULT-9) enter an `ExecutionSession` at runtime, in addition to the pre-queue pathway already governed by `pending_operator_envelopes` at `session.begin()`.
+
+The clauses D-INGRESS-1 through D-INGRESS-9 are **conjunctive admissibility conditions**: live ingress is constitutionally compatible with the substrate IF AND ONLY IF all nine disciplines hold. Each discipline closes one or more identified threat surfaces from the Step 11 framework (per `docs/phase_4b_step11_admissibility_framework.md` §G + `docs/phase_4b_step11_f58_paused_analysis.md` §N).
+
+D-INGRESS clauses bind the **substrate's view of the channel**, not the transport layer or the channel's internal implementation. The transport may use any push, pull, queue, or pub-sub mechanism; the substrate observes the channel exclusively through the Phase-A pull surface enumerated below.
+
+### 14.2 D-INGRESS-1 — Channel Opacity
+
+**D-INGRESS-1** — The channel is a **passive store**. It produces no observable behavior to the orchestration substrate except through the session's Phase-A pull. The channel **MUST NOT** emit events, **MUST NOT** register subscribers, **MUST NOT** expose a state-machine to orchestration, and **MUST NOT** observe session state.
+
+**Citations.**
+* Anchor: D-FAULT-9, D-BUS-1
+
+*Note.* This clause asserts framework Discipline D1 (Channel Opacity) per `docs/phase_4b_step11_admissibility_framework.md` §G.1. D1 closes Step 11 framework Threats 1 (channel-as-second-emitter), 5 (cross-session channel state observation), and 8 (per-session lifecycle bleed). D-INGRESS-1 is normative-strengthening (making explicit the channel's passive-store property that D-FAULT-9 envelope-schema discipline + D-BUS-1 synchronous-dispatch discipline already imply), not normative-additive.
+
+### 14.3 D-INGRESS-3 — Strict Atomic Snapshot
+
+**D-INGRESS-3** — The channel pull **MUST** be an atomic operation that simultaneously (a) captures the channel's current buffer contents as a deterministic return value and (b) clears the channel's buffer. New arrivals after the snapshot **MUST** be invisible to the current `session.step()` invocation; they become eligible for the next session.step()'s Phase-A pull.
+
+**Citations.**
+* Anchor: D-FAULT-9, D-FAULT-6
+
+*Note.* This clause asserts framework Discipline D3 (Strict Atomic Snapshot) per `docs/phase_4b_step11_admissibility_framework.md` §G.1. D3 closes Step 11 framework Threat 2 (hidden-race specifics at the pull boundary). The atomicity requirement constrains the observation, not the implementation mechanism (lock, CAS, lock-free queue with snapshot semantics, etc., are all admissible). D-INGRESS-3 is normative-strengthening (making explicit the snapshot atomicity property required by D-FAULT-6's Phase-A ingress entry surface), not normative-additive.
+
+### 14.4 D-INGRESS-2 — Phase-A-Only Pull
+
+**D-INGRESS-2** — The session **MUST** pull the channel exactly once per `session.step()` invocation, at the start of Phase A, before the existing `_drain_phase_a_envelopes` step. **No** sub-phase pull, **no** Phase B/C/D/E/F/G pull, and **no** post-Phase-G pull is admissible.
+
+**Citations.**
+* Anchor: D-FAULT-6, D-FAULT-6c, D-EXEC-1
+
+*Note.* This clause asserts framework Discipline D2 (Phase-A-Only Pull) per `docs/phase_4b_step11_admissibility_framework.md` §G.1. D2 closes Step 11 framework Threats 2 (sub-phase observation), 3 (Phase-E pull), and 6 (post-execute pull). D-INGRESS-2 is constitutionally aligned with D-FAULT-6c (Phase-A-Only Ingress Observability, Wave 1) — D-FAULT-6c bounds the observation surface for ingress events to Phase A; D-INGRESS-2 bounds the pull mechanism for the channel to Phase A. The two clauses are complementary: D-FAULT-6c is the foreclosure on observation surfaces; D-INGRESS-2 is the foreclosure on pull invocations. D-INGRESS-2 is normative-strengthening, not normative-additive.
+
+### 14.5 D-INGRESS-4 — Canonical-Order Discipline
+
+**D-INGRESS-4** — After the Phase-A pull, the merged `_pending_envelopes` set **MUST** be canonical-ordered by `(requested_at_tick, envelope_id)`. The drain **MUST** iterate this canonical order. Transport-layer arrival order, buffer storage order, and channel internal order **MUST NOT** influence drain order.
+
+**Citations.**
+* Anchor: D-FAULT-9, D-SCHED-1
+
+*Note.* This clause asserts framework Discipline D4 (Canonical-Order Discipline) per `docs/phase_4b_step11_admissibility_framework.md` §G.1. D4 closes Step 11 framework Threat 4 (transport-layer ordering authority over drain order). The canonical-order key `(requested_at_tick, envelope_id)` derives from D-FAULT-9's envelope schema (`requested_at_tick` field; content-addressed `envelope_id`). D-INGRESS-4 is normative-strengthening (making explicit the canonical-order discipline that D-FAULT-9 + D-SCHED-1's pure-function input set already imply), not normative-additive — it does NOT introduce transport-authority and does NOT introduce wall-clock-arrival authority.
+
+### 14.6 D-INGRESS-5 — Pull-Only Direction
+
+**D-INGRESS-5** — **No** callback, **no** notification, **no** signal, **no** asynchronous task, and **no** event **MAY** flow from the channel into the session except via the session's Phase-A pull. The session **MUST** always be the initiator of the observation surface; the channel **MUST NOT** initiate communication with the session.
+
+**Citations.**
+* Anchor: D-FAULT-9, D-BUS-2
+
+*Note.* This clause asserts framework Discipline D5 (Pull-Only Direction) per `docs/phase_4b_step11_admissibility_framework.md` §G.1. D5 closes Step 11 framework Threat 1 explicitly (preventing the channel from becoming a second authoritative emitter alongside the session). The Pull-Only Direction reinforces D-BUS-2's prohibition on asynchronous primitives in the event-bus implementation. D-INGRESS-5 is normative-strengthening, not normative-additive.
+
+### 14.7 D-INGRESS-6 — Predicate Closure Stability
+
+**D-INGRESS-6** — The execute-entry predicate **MUST** close over `_pending_envelopes` as Phase A left it. **No** subsequent mutation of `_pending_envelopes` (e.g. a second pull, a callback-injected envelope, a sub-phase observation) **MAY** occur within the same `session.step()` invocation. The predicate **MUST** be constructed by the session (per D-EXEC-13c) and consumed opaquely by the executor (per D-EXEC-13d).
+
+**Citations.**
+* Anchor: D-EXEC-13c, D-EXEC-13d, D-FAULT-9
+
+*Note.* This clause asserts framework Discipline D6 (Predicate Closure Stability) per `docs/phase_4b_step11_admissibility_framework.md` §G.1. D6 closes Step 11 framework Threat 6 (predicate input variance within a single tick). D-INGRESS-6 is constitutionally aligned with D-EXEC-13c (predicate session-constructed only) + D-EXEC-13d (predicate opaque to executor) — D-INGRESS-6 extends these to assert the closure's *input stability* across the Phase-A-to-execute-entry interval. D-INGRESS-6 is normative-strengthening, not normative-additive.
+
+### 14.8 D-INGRESS-7 — Per-Session Channel Lifecycle
+
+**D-INGRESS-7** — The channel **MUST** be constructed at or before `session.begin()` and **MUST** be torn down at `session.close()`. Channel state **MUST NOT** survive into subsequent sessions in the same process. The transport layer **MAY** persist across sessions; the substrate's view of the channel **MUST NOT**.
+
+**Citations.**
+* Anchor: D-FAULT-9, D-CONT-1
+
+*Note.* This clause asserts framework Discipline D7 (Per-Session Channel Lifecycle) per `docs/phase_4b_step11_admissibility_framework.md` §G.1. D7 closes Step 11 framework Threat 8 (cross-session channel state observation). The constitutional invariant is that channel state is a session-scoped resource; the transport layer's persistence is out-of-substrate. D-INGRESS-7 is normative-strengthening (making explicit the session-scoped lifecycle property that D-FAULT-9's session-bound envelope schema + D-CONT-1's session-scoped authoritative state discipline already imply), not normative-additive.
+
+### 14.9 D-INGRESS-8 — Diagnostic Boundary
+
+**D-INGRESS-8** — Wall-clock arrival timestamps, transport identifiers, connection state, and any other non-authoritative channel metadata are **diagnostic only**, subject to three conjunctive sub-rules:
+
+* **D-INGRESS-8a (on-event-not-envelope):** Diagnostic metadata **MAY** be recorded on `OperatorAbortRequested` / `OperatorPauseRequested` / `OperatorResumeRequested` events as an explicitly diagnostic payload field, subject to D-SESS-5. Diagnostic metadata **MUST NOT** enter the `OperatorEnvelope` schema (D-FAULT-9).
+* **D-INGRESS-8b (not-read-by-orchestration):** Orchestration logic — scheduler decisions (D-SCHED-1), predicate evaluation (D-SCHED-12), command emission (D-EXEC), validation, or replay-authoritative trace commits (D-TRACE-1) — **MUST NOT** read diagnostic metadata. Diagnostic metadata is non-authoritative.
+* **D-INGRESS-8c (not-in-fingerprint):** Diagnostic metadata **MUST NOT** enter the per-task fingerprint (D-FAULT-10), the canonical-drain order (D-SCHED), the predicate closure (D-EXEC-13), or any authoritative continuity surface (D-CONT-1). Diagnostic metadata **MUST NOT** influence replay-identity comparisons (D-REPLAY-1 through D-REPLAY-9).
+
+Diagnostic metadata **MAY** be omitted entirely.
+
+**Citations.**
+* Anchor: D-FAULT-9, D-SESS-5, D-FAULT-10, D-SCHED-11
+
+*Note.* This clause asserts framework Discipline D8 (Diagnostic Boundary) per `docs/phase_4b_step11_admissibility_framework.md` §G.1. D8 closes Step 11 framework Threat 3 (partial) and Threat 7 (partial) via the diagnostic-field discipline. The three sub-rules (D-INGRESS-8a/b/c) jointly prevent diagnostic metadata from acquiring orchestration authority through any indirect pathway. D-INGRESS-8 is normative-strengthening (making explicit the diagnostic-authoritative separation that D-SESS-5 + D-SCHED-11 + D-FAULT-10 already imply), not normative-additive — it does NOT introduce wall-clock authority and does NOT introduce transport authority.
+
+### 14.10 D-INGRESS-9 — Caller-Driven PAUSED Cadence
+
+**D-INGRESS-9** — During the `PAUSED` session state, the substrate **MUST NOT** make wall-clock observations and **MUST NOT** consume wall-clock duration internally. The wall-clock duration of any PAUSED interval **MUST** be determined entirely by the cadence at which the caller invokes `session.step()`. The substrate **MUST** count only `orchestration_tick` values; the substrate **MUST NOT** measure, gate on, or observe wall-clock duration during PAUSED. D-INGRESS-9 applies conditionally on `PAUSED` being an admitted session state; when `PAUSED` is constitutionally admitted, this discipline becomes binding without modification of this clause.
+
+**Citations.**
+* Anchor: D-SCHED-11, D-FAULT-9, D-FAULT-9a
+
+*Note.* This clause asserts framework Discipline D9 (Caller-Driven PAUSED Cadence) per `docs/phase_4b_step11_f58_paused_analysis.md` §N.1. D9 closes Step 11 framework Threat 7 (PAUSED-as-wall-clock-wait) by forbidding the substrate from observing wall-clock during PAUSED. The substrate's wall-clock foreclosure (D-SCHED-11) is already in force pre-Step-12 and remains the controlling constitutional discipline for non-PAUSED contexts; D-INGRESS-9 extends the same foreclosure surface specifically into the PAUSED state. D-INGRESS-9 is normative-strengthening (making explicit the PAUSED-specific wall-clock foreclosure that D-SCHED-11 already implies for the PAUSED state), not normative-additive — it does NOT introduce autonomous progression, does NOT introduce wall-clock authority, and does NOT introduce scheduler-state mutation outside of caller-driven `session.step()` invocations.
+
+### 14.11 Step 11 scope restatement
+
+The nine D-INGRESS clauses jointly assert the Step 11 framework's verdict: **live operator ingress is constitutionally compatible with the Phase 4B substrate IF AND ONLY IF D-INGRESS-1 through D-INGRESS-9 all hold.** This restatement is non-normative; the constitutional binding is on the per-clause statements above.
+
+Per Step 11 framework §G.2 (sufficiency claim) + §G.3 (necessity claim): D1–D9 are both sufficient (admitting the channel mechanism without weakening any existing clause) and necessary (removing any single Di reopens at least one threat). Per `docs/phase_4b_step11_closure_verification.md` §7.1: no additional threat surface beyond the eight Step 11 threats + the F58-introduced Threat 7 requires a new discipline; D1–D9 are minimal and complete.
+
+The §14 D-INGRESS family is the constitutional landing surface for live ingress. Subsequent waves of Step 12 codification may cite §14 from §13 D-FAULT extensions and from D-FAULT-15 row extensions where ingress-related foreclosures intersect with failure-family semantics; the specific cross-section citation graph is the next-wave authoring concern and is not pre-bound here.
+
+---
+
 **End of deterministic-semantics contract.**
 
 This document binds [docs/phase_4b_orchestration_architecture.md](phase_4b_orchestration_architecture.md) and every Phase 4B implementation step that follows. On adoption, the next architectural artifact is the step-1 implementation note for `EventBus` + event taxonomy, which **must** cite this contract for every dispatch / ordering / subscriber-topology choice it makes. Sections §12 (D-CONT) and §13 (D-FAULT) extend the contract for inter-node continuity (Step 8) and deterministic failure semantics (Step 9) respectively; every subsequent step MUST cite both families for any cross-node or failure-path behaviour. Section §1.5 (D-EXEC-13 sub-Phase-E interruption surface) and the D-FAULT-1b / D-FAULT-3b / D-FAULT-12c clauses (Step 10 Direction A contract freeze, §13.17) extend the contract for deterministic executor interruption surfaces; every subsequent step that touches the executor MUST cite §1.5 and §13.17 for any segment-boundary, predicate-consumption, `ticks_consumed`, or `EXECUTION_INTERRUPTED` behaviour.
