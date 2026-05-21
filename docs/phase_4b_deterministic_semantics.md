@@ -32,6 +32,7 @@ The contract is **architecture-level**: it constrains semantics, not signatures.
 | **runtime hash** | `H(isaac_sim_version, physx_version, cell_authoring_schema_version, cell_cfg_content_hash)`. The cross-process determinism boundary. |
 | **OperatorEnvelope** | Frozen dataclass per D-FAULT-9; sole orchestration ingress unit; content-addressed `envelope_id`. |
 | **Channel** | Per-session passive store of OperatorEnvelopes pushed by transport; observed only by session at Phase A pull (D-INGRESS-1, D-INGRESS-2). |
+| **Pull** | Atomic snapshot operation at start of Phase A by which the session captures the channel's current buffer (D-INGRESS-2, D-INGRESS-3). |
 
 ---
 
