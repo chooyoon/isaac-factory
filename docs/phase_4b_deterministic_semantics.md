@@ -304,6 +304,22 @@ Widening any of these sets without explicit amendment of the cited governing cla
 * Retry / dead-letter / replay of failed subscriber callbacks. A subscriber that fails *records* the failure; recovery is out of scope.
 * Priority dispatch. Subscriber order is registration order, full stop.
 
+### 3.7 Framework Theorem T4 — Acquisition-Visibility Tick Alignment (embedded note)
+
+For every authoritative ingress event in a session, the `orchestration_tick` at which the envelope acquires orchestration authority is identical to the `orchestration_tick` value held by the session at the moment the EventBus emits the corresponding event. Acquisition and visibility are co-located within a single `orchestration_tick`, even when separated across multiple sub-phases of that tick.
+
+Two cases manifest this alignment:
+
+* **Phase-A-drained envelope.** Envelope drains at Phase A of `session.step(K)`. The bus emits `OperatorAbortRequested` (or the corresponding pause/resume event) at that Phase A (D-BUS-1). The session-state transition (e.g., `RUNNING` → `ABORTING`) happens at that Phase A. `orchestration_tick = K` throughout. Acquisition and visibility are both at tick `K`.
+* **Deferred-from-Phase-A envelope** (Step 10 Direction A path). Envelope is present in `_pending_envelopes` at execute-entry of `session.step(K)`. Predicate closure captures the envelope. Executor returns `EXECUTION_INTERRUPTED`. The session emits the deferred ingress event at post-Phase-E classification (D-FAULT-3b). The state transition happens at the same post-Phase-E moment. `orchestration_tick = K` throughout. Acquisition and visibility are both at tick `K`.
+
+In both cases, no ingress event acquires authority at tick `K_a` and becomes visible at tick `K_v` with `K_a ≠ K_v`. Phase-of-origin discipline (D-EXEC-2) and Phase-G trace-commit discipline (D-EXEC-7) jointly anchor every emission to a single tick value, and gap-free monotone `seq` (D-BUS-3) preserves the per-tick emission ordering within the trace.
+
+**Citations.**
+* Anchor: D-BUS-1, D-BUS-3, D-EXEC-2, D-EXEC-7, D-FAULT-3b
+
+*Note.* This embedded explanatory note paraphrases framework Theorem T4 (Acquisition-Visibility Tick Alignment) per `docs/phase_4b_step11_admissibility_framework.md` §B.4. T4 is **NORMATIVE-CANDIDATE** per framework §B.4 classification — formalizing the substrate's distinctive property that multi-phase ingress emissions remain tick-local. The embedded form codifies T4's reasoning without introducing a new clause; the foreclosure of cross-tick acquisition/visibility decoupling is structurally already enforced by the five anchor clauses above (per framework §B.4 hypotheses). No new authority surface, no replay-identity widening, no ingress widening, no scheduler widening, no bus-emission discipline widening. V9 framework-label confinement preserved (the framework label "T4" appears only in this Note section).
+
 ---
 
 ## 4. Replay Identity Model  *(D-REPLAY)*
