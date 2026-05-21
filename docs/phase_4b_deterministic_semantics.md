@@ -1400,6 +1400,7 @@ A code path that "cleans up" on failure without an emitted event is a contract v
 | 35 | transport-layer ordering authority over canonical drain order | D-SCHED-1, D-SCHED-5, D-SCHED-6, D-SCHED-7 |
 | 36 | channel state machine observable to orchestration (ack/nack, pending/processed) | D-FAULT-14, D-SESS-4 |
 | 37 | cross-session live-channel state (`channel` survives `session.close()` in same process) | D-FORBID-12, D-FAULT-15 #12 |
+| 38 | wall-clock blocking in `PAUSED` state (`session.step` blocks on resume arrival) | D-FORBID-11 |
 
 ### 13.16 Step 9 scope restatement
 
