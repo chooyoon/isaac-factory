@@ -1396,6 +1396,7 @@ A code path that "cleans up" on failure without an emitted event is a contract v
 | 31 | live-channel callback registration (any API by which the channel notifies the session of envelope arrival outside Phase A pull) | D-FAULT-15 #16, D-FORBID-1 |
 | 32 | sub-tick channel pull (pulls at Phase B/C/D/E/F/G) | D-EXEC-1, D-EXEC-2 |
 | 33 | mid-Phase-E channel pull (any read of channel state during `executor.execute()`) | D-FAULT-15 #5, #27, D-EXEC-13a |
+| 34 | wall-clock arrival timestamp as authoritative field on `OperatorEnvelope` | D-FORBID-6, D-FAULT-15 #10, #22 |
 
 ### 13.16 Step 9 scope restatement
 
