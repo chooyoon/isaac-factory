@@ -1138,6 +1138,15 @@ Specifically:
 
 *Note.* This clause asserts framework Theorem T2 (N2-only-Interruption Impossibility) per `docs/phase_4b_step11_admissibility_framework.md` §B.2. The embedded T1 explanation (Tick Non-Commensurability) is a separate C-2 note authored in Wave 6; it provides the wall-clock-to-orchestration-tick non-commensurability reasoning that underlies this clause's "earliest authority = `K_N + 1`" assertion. T2 is normative-strengthening (making implicit D-FAULT-6 + D-EXEC-13a + D-EXEC-13c + D-FAULT-15 row 27 discipline explicit), not normative-additive.
 
+#### 13.6.3 D-FAULT-6c — Phase-A-Only Ingress Observability
+
+**D-FAULT-6c** — Within a single `session.step(K)` invocation, the session's only observation surface for ingress events is **Phase A**. Sub-Phase pulled observation at Phases B, C, D, E, F, or G, and `pull-at-end-of-Phase-G` observation, are **FORBIDDEN**. Every ingress observation MUST correspond to exactly one (`session_id`, `orchestration_tick`) pair, with `orchestration_tick` value equal to `K` (the value the tick holds throughout the entire `session.step(K)` call).
+
+**Citations.**
+* Anchor: D-EXEC-1, D-EXEC-2, D-FAULT-6
+
+*Note.* This clause asserts framework Theorem T3 (Phase-A-Only Ingress Observability) per `docs/phase_4b_step11_admissibility_framework.md` §B.3. The framework's derivation hypotheses are D-EXEC-1 (7-phase order; no sub-phases), D-EXEC-2 (events out of phase forbidden), D-EXEC-13a (Phase E atomic), and D-FAULT-15 row 27 (mid-execute envelope drain forbidden); framework Theorem T1 (Tick Non-Commensurability) provides the wall-clock-to-orchestration-tick non-commensurability reasoning that underlies "`orchestration_tick` value at observation = `K`". T3 is normative-strengthening (making implicit D-EXEC-1 + D-EXEC-2 + D-FAULT-6 + D-EXEC-13a + D-FAULT-15 row 27 discipline explicit), not normative-additive — it forecloses the post-Phase-A pull, pre-Phase-E pull, and pre-Phase-G pull design temptations.
+
 ### 13.7 D-FAULT-7 — Idempotent cancellation
 
 **D-FAULT-7** — Cancellation is idempotent at the **transition**, not the envelope:
