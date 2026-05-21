@@ -31,6 +31,7 @@ The contract is **architecture-level**: it constrains semantics, not signatures.
 | **diagnostic state** | State emitted for human/observability use; never read back by orchestration logic. |
 | **runtime hash** | `H(isaac_sim_version, physx_version, cell_authoring_schema_version, cell_cfg_content_hash)`. The cross-process determinism boundary. |
 | **OperatorEnvelope** | Frozen dataclass per D-FAULT-9; sole orchestration ingress unit; content-addressed `envelope_id`. |
+| **Channel** | Per-session passive store of OperatorEnvelopes pushed by transport; observed only by session at Phase A pull (D-INGRESS-1, D-INGRESS-2). |
 
 ---
 
