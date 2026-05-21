@@ -1393,6 +1393,7 @@ A code path that "cleans up" on failure without an emitted event is a contract v
 | 28 | async cancellation channel, signal handler, thread-based interrupt, or any non-synchronous interruption mechanism into the executor | D-EXEC-13, §1.6 non-goals |
 | 29 | adaptive interruption (predicate mutating mid-`execute()`, predicate substitution, predicate composition by the executor) | D-EXEC-13c |
 | 30 | live-channel interruption ingress during `execute()` (envelopes arriving mid-execute and influencing the predicate) | D-EXEC-13 (closure captured at execute-entry only) — Step 11 territory |
+| 31 | live-channel callback registration (any API by which the channel notifies the session of envelope arrival outside Phase A pull) | D-FAULT-15 #16, D-FORBID-1 |
 
 ### 13.16 Step 9 scope restatement
 
