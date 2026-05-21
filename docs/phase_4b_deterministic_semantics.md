@@ -382,6 +382,24 @@ Scheduled-injection is a **replay-tool reconstruction algorithm**, not a substra
 
 *Note.* This clause asserts framework refinement R1 to Lemma L4 (Replay-Reconstruction From Trace Alone) per `docs/phase_4b_step11_admissibility_framework.md` §C.4 and `docs/phase_4b_step11_f58_paused_analysis.md` §J.2. R1 extends L4's reconstruction primitive from "pre-queue only" to "scheduled-injection," resolving the late-arrival case where an envelope's Phase A drain tick differs from its `requested_at_tick`. D-REPLAY-10 is normative-strengthening (making explicit the replay-tool reconstruction primitive that the trace + D-FAULT-9 content-addressing already enable), not normative-additive — it introduces no new production-runtime semantics, no new ingress surfaces, and no new authority quanta; `orchestration_tick` remains the authority quantum (D-SCHED-11 preserved); transport-independence (framework Theorem T5) is preserved (the replay tool reads only the trace). The extraction plan §4.2 row 6 reference to "L4 framework label" is materialized in this Note section to preserve V9 framework-ref confinement; the Citations Reference subsection is intentionally omitted to avoid V17 ambiguity with the contract's local "L4" label (§4.1 Semantic Validation Identity layer, an unrelated concept).
 
+### 4.6 Framework Theorem T5 — Transport-Independence (embedded note)
+
+The substrate's observable behavior — events, state transitions, replay-identity, fingerprints, retained state, contradiction preservation — is **invariant under change of transport**. Two implementations of the live channel that deliver the same envelope sets to the session at the same drain epochs produce a byte-equal authoritative trace, regardless of:
+
+* network protocol or local IPC mechanism (WebRTC, websocket, HTTP, ZeroMQ, gRPC, named-pipe, message-queue, filesystem-polling, in-process queue);
+* threading model in the transport layer;
+* retry, backoff, or deduplication policies in the transport layer;
+* serialization format on the wire;
+* number of concurrent operator connections;
+* transport-layer wall-clock delivery latency.
+
+The transport sits **outside** the substrate boundary defined by §14 D-INGRESS. The substrate observes ingress only via the canonical Phase A pull (D-INGRESS-5) of an opaque passive store (D-INGRESS-1); the merged `_pending_envelopes` set is canonical-ordered by `(requested_at_tick, envelope_id)` at Phase A (D-INGRESS-4), discarding transport-layer arrival order; transport-arrival timestamps and connection metadata are diagnostic-only (D-INGRESS-8) and excluded from replay-identity comparisons. Replay reconstructs from the authoritative trace alone (D-REPLAY-10's scheduled-injection primitive), never from the transport. Together these clauses make the transport's identity invisible to every replay-identity surface.
+
+**Citations.**
+* Anchor: D-INGRESS-1, D-INGRESS-4, D-INGRESS-5, D-INGRESS-8, D-REPLAY-10
+
+*Note.* This embedded explanatory note paraphrases framework Theorem T5 (Transport-Independence) per `docs/phase_4b_step11_admissibility_framework.md` §I.1. T5 is **NORMATIVE-CANDIDATE** per framework §I.1 classification — the formal statement of transport-orthogonality. The embedded form codifies T5's reasoning without introducing a new clause; transport-independence is structurally already enforced by the five anchor clauses above (per framework §I.1 hypotheses: Disciplines D1/D4/D5/D8 codified as D-INGRESS-1/-4/-5/-8 in Wave 2, and Lemma L4 codified as D-REPLAY-10 in Wave 1 via refinement R1). This embedded note also closes the forward reference in D-REPLAY-10's Note (§4.5; "transport-independence (framework Theorem T5) is preserved") by materializing T5's canonical contract paraphrase. No new authority surface, no replay-identity widening, no ingress widening, no scheduler widening, no transport-discipline widening. V9 framework-label confinement preserved (the framework labels "T5" and "L4" appear only in this Note section).
+
 ---
 
 ## 5. ExecutionSession Authority Boundary  *(D-SESS)*
