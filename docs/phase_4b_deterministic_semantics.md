@@ -30,6 +30,7 @@ The contract is **architecture-level**: it constrains semantics, not signatures.
 | **derived state** | State recomputed from replay-authoritative state on every run; not stored. |
 | **diagnostic state** | State emitted for human/observability use; never read back by orchestration logic. |
 | **runtime hash** | `H(isaac_sim_version, physx_version, cell_authoring_schema_version, cell_cfg_content_hash)`. The cross-process determinism boundary. |
+| **OperatorEnvelope** | Frozen dataclass per D-FAULT-9; sole orchestration ingress unit; content-addressed `envelope_id`. |
 
 ---
 
