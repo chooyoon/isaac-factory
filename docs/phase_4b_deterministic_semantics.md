@@ -224,6 +224,22 @@ No other inputs are permitted. In particular, the scheduler may not read:
 
 * Parallel scheduling, anytime scheduling, priority-budget scheduling. Phase 4B ships exactly one scheduler (`TopologicalSequentialScheduler`). Any alternative is a deliberate Phase 4C+ extension that must publish its own conformance to D-SCHED-1 through D-SCHED-13.
 
+### 2.7 D-SCHED-14 — Orchestration-Decision Input Whitelist Closure
+
+**D-SCHED-14** — The input sets of the orchestration-decision pure functions are constitutionally **closed** — no additional input may be admitted without explicit amendment of the cited governing clause:
+
+* scheduler input set: `(graph, registry, completed, failed, retry_counts)` (D-SCHED-1);
+* predicate input set: `registry` (D-SCHED-12);
+* registry-mutation entry points: `ExecutionSession.begin()` and Phase D / Phase G of orchestration ticks (D-SESS-6);
+* executor predicate closure capture set: `(envelope snapshot, base_tick, tick_budget_ticks, task_id)` at execute-entry (D-EXEC-13c).
+
+Widening any of these sets without explicit amendment of the cited governing clause is **FORBIDDEN**.
+
+**Citations.**
+* Anchor: D-SCHED-1, D-SCHED-12, D-SESS-6, D-EXEC-13c
+
+*Note.* This clause asserts framework Theorem T9 (Orchestration-Decision Input Whitelist Closure) per `docs/phase_4b_step11_closure_verification.md` §5. T9 captures the closure property of the orchestration-decision input-whitelist set: each input set is uniquely fixed by an existing governing clause; no additional input may be admitted without weakening at least one existing clause. T9 is normative-strengthening (making the implicit closure of D-SCHED-1 + D-SCHED-12 + D-SESS-6 + D-EXEC-13c explicit), not normative-additive — it forecloses the addition of new orchestration-decision inputs (e.g., observer surfaces, transport-layer state, hardware-sensor reads outside D-CONT-5a's PhysX projection) without explicit clause amendment.
+
 ---
 
 ## 3. EventBus Semantics  *(D-BUS)*
